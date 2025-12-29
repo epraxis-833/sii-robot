@@ -9,7 +9,7 @@ app.use(express.json({limit: '10mb'}));
 app.post('/sii-navigate', async (req, res) => {
   const { url, rutautorizado, password, rutemisor } = req.body;
   
-  console.log('📥 Recibido:', { url: url?.substring(0, 50) + '...', rutautorizado, rutemisor });
+  console.log('📥 Recibido:', { rutautorizado, rutemisor });
   
   try {
     const browser = await puppeteer.launch({ 
@@ -18,47 +18,38 @@ app.post('/sii-navigate', async (req, res) => {
     });
     const page = await browser.newPage();
     
-    // ✅ SOLUCIÓN: URL-ENCODE + User-Agent
-    const encodedUrl = encodeURI(url);
+    // ✅ USER-AGENT real
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
-    console.log('🌐 Navegando a:', encodedUrl.substring(0, 80) + '...');
-    await page.goto(encodedUrl, { 
-      waitUntil: 'networkidle2',
-      timeout: 60000  // 60 segundos
+    // ✅ PASO 1: URL BASE SII (SIN query params raros)
+    console.log('🌐 Paso 1: Página login SII');
+    await page.goto('https://zeusr.sii.cl/AUT2000/InicioAutenticacion/IngresoRutClave.html', { 
+      waitUntil: 'networkidle2', 
+      timeout: 30000 
     });
+    await page.waitForTimeout(3000);
     
-    await page.waitForTimeout(5000);
-    
-    // Login SII
+    // LOGIN
     await page.type('input[name*="rutcntr"]', rutautorizado);
     await page.type('input[type="password"]', password);
-    await page.waitForTimeout(3000);
     await page.click('button[type="submit"], input[type="submit"]');
-    await page.waitForTimeout(10000);  // SII lento
+    await page.waitForTimeout(10000);
     
-    // Navegación paso a paso
+    // ✅ PASO 2: Continuar
     await page.waitForSelector('a:has-text("Continuar")', { timeout: 10000 });
     await page.click('a:has-text("Continuar")');
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(5000);
     
-    await page.waitForSelector('a:has-text("Servicios online")', { timeout: 10000 });
+    // Navegación completa
+    await page.waitForSelector('a:has-text("Servicios online")');
     await page.click('a:has-text("Servicios online")');
-    await page.waitForTimeout(3000);
-    
     await page.click('a:has-text("Boletas de honorarios electrónicas")');
-    await page.waitForTimeout(3000);
-    
     await page.click('a:has-text("Emisor de boleta de honorarios")');
-    await page.waitForTimeout(3000);
-    
     await page.click('a:has-text("Emitir boleta de honorarios electrónica")');
-    await page.waitForTimeout(3000);
     
     await page.click('a:has-text("Por usuario autorizado con datos usados anteriormente")');
     await page.waitForTimeout(5000);
     
-    // Buscar RUT emisor
     await page.waitForSelector(`a:has-text("${rutemisor}")`, { timeout: 15000 });
     await page.click(`a:has-text("${rutemisor}")`);
     await page.waitForTimeout(5000);
@@ -66,7 +57,7 @@ app.post('/sii-navigate', async (req, res) => {
     const finalUrl = page.url();
     await browser.close();
     
-    console.log('✅ ÉXITO! Final:', finalUrl);
+    console.log('✅ FINAL:', finalUrl);
     res.json({ success: true, finalUrl });
     
   } catch (error) {
@@ -76,4 +67,3 @@ app.post('/sii-navigate', async (req, res) => {
 });
 
 app.listen(3000, () => console.log('🤖 Robot SII listo!'));
-
