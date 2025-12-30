@@ -4,7 +4,6 @@ const cors = require('cors');
 const app = express();
 
 app.use(cors());
-// Permite leer el cuerpo de la petición en formato JSON
 app.use(express.json({limit: '10mb'}));
 
 app.post('/sii-navigate', async (req, res) => {
@@ -41,7 +40,6 @@ app.post('/sii-navigate', async (req, res) => {
         page.waitForNavigation({ waitUntil: 'networkidle2' })
     ]);
 
-    // Función auxiliar para navegar haciendo click en textos específicos
     const clickByText = async (text) => {
         console.log(`🖱️ Buscando enlace: ${text}`);
         const xpath = `//a[contains(translate(., "ABCDEFGHIJKLMNÑOPQRSTUVWXYZ", "abcdefghijklmnñopqrstuvwxyz"), "${text.toLowerCase()}")]`;
@@ -53,32 +51,30 @@ app.post('/sii-navigate', async (req, res) => {
         ]);
     };
 
-    // 2. NAVEGACIÓN PASO A PASO
+    // 2. NAVEGACIÓN
     await clickByText("Continuar");
     await clickByText("Servicios online");
     await clickByText("Boletas de honorarios electrónicas");
     await clickByText("Emisor de boleta de honorarios");
     await clickByText("Emitir boleta de honorarios electrónica");
     await clickByText("Por usuario autorizado con datos usados anteriormente");
-    
-    // 3. SELECCIÓN DEL RUT EMISOR
     await clickByText(rutemisor);
     
     const finalUrl = page.url();
     await browser.close();
     
-    console.log("✅ Navegación completada con éxito.");
+    console.log("✅ Proceso terminado.");
     res.json({ success: true, finalUrl });
     
   } catch (error) {
     if (browser) await browser.close();
-    console.error("❌ Error en el proceso:", error.message);
+    console.error("❌ Error:", error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// CORRECCIÓN CRÍTICA: Railway asigna el puerto dinámicamente
+// MODIFICACIÓN CRÍTICA PARA RAILWAY
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Robot escuchando en el puerto ${PORT}`);
+  console.log(`🚀 Robot activo en puerto ${PORT}`);
 });
