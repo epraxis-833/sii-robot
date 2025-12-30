@@ -4,23 +4,34 @@ const cors = require('cors');
 const app = express();
 
 app.use(cors());
+// Permite leer el cuerpo de la petición en formato JSON
 app.use(express.json({limit: '10mb'}));
 
 app.post('/sii-navigate', async (req, res) => {
   const { rutautorizado, password, rutemisor } = req.body;
-  console.log(`Recibida petición para RUT: ${rutautorizado}`);
+  console.log(`📥 Procesando solicitud para RUT: ${rutautorizado}`);
   
   let browser;
   try {
     browser = await puppeteer.launch({ 
       headless: "new",
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+      args: [
+        '--no-sandbox', 
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--single-process',
+        '--no-zygote'
+      ]
     });
     const page = await browser.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
-    // 1. LOGIN
-    await page.goto('https://zeusr.sii.cl/AUT2000/InicioAutenticacion/IngresoRutClave.html', { waitUntil: 'networkidle2' });
+    // 1. LOGIN SII
+    await page.goto('https://zeusr.sii.cl/AUT2000/InicioAutenticacion/IngresoRutClave.html', { 
+      waitUntil: 'networkidle2',
+      timeout: 60000 
+    });
+    
     await page.waitForSelector('input[name*="rutcntr"]');
     await page.type('input[name*="rutcntr"]', rutautorizado);
     await page.type('input[type="password"]', password);
@@ -30,10 +41,11 @@ app.post('/sii-navigate', async (req, res) => {
         page.waitForNavigation({ waitUntil: 'networkidle2' })
     ]);
 
-    // Función auxiliar para navegar por texto
+    // Función auxiliar para navegar haciendo click en textos específicos
     const clickByText = async (text) => {
-        const xpath = `//a[contains(., "${text}")]`;
-        await page.waitForXPath(xpath, { visible: true });
+        console.log(`🖱️ Buscando enlace: ${text}`);
+        const xpath = `//a[contains(translate(., "ABCDEFGHIJKLMNÑOPQRSTUVWXYZ", "abcdefghijklmnñopqrstuvwxyz"), "${text.toLowerCase()}")]`;
+        await page.waitForXPath(xpath, { visible: true, timeout: 20000 });
         const [link] = await page.$x(xpath);
         await Promise.all([
             link.click(),
@@ -41,7 +53,7 @@ app.post('/sii-navigate', async (req, res) => {
         ]);
     };
 
-    // 2. Proceso de navegación
+    // 2. NAVEGACIÓN PASO A PASO
     await clickByText("Continuar");
     await clickByText("Servicios online");
     await clickByText("Boletas de honorarios electrónicas");
@@ -49,20 +61,24 @@ app.post('/sii-navigate', async (req, res) => {
     await clickByText("Emitir boleta de honorarios electrónica");
     await clickByText("Por usuario autorizado con datos usados anteriormente");
     
-    // 3. Selección RUT Emisor
+    // 3. SELECCIÓN DEL RUT EMISOR
     await clickByText(rutemisor);
     
     const finalUrl = page.url();
     await browser.close();
+    
+    console.log("✅ Navegación completada con éxito.");
     res.json({ success: true, finalUrl });
     
   } catch (error) {
     if (browser) await browser.close();
-    console.error("Error en el proceso:", error.message);
+    console.error("❌ Error en el proceso:", error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// CAMBIO CRÍTICO: Railway usa process.env.PORT
+// CORRECCIÓN CRÍTICA: Railway asigna el puerto dinámicamente
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => console.log(`🤖 Robot escuchando en puerto ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Robot escuchando en el puerto ${PORT}`);
+});
