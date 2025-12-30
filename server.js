@@ -4,76 +4,78 @@ const cors = require('cors');
 const app = express();
 
 app.use(cors());
+// Permite recibir tanto JSON como datos de formulario
 app.use(express.json({limit: '10mb'}));
-app.use(express.urlencoded({ extended: true })); // Importante para recibir datos de Guzzle
+app.use(express.urlencoded({ extended: true }));
 
 app.post('/sii-navigate', async (req, res) => {
-  // Nota: Laravel Guzzle envía a veces como form_params, extraemos de req.body
+  // Extraemos datos asegurando compatibilidad con diferentes métodos de envío
   const { url, rutautorizado, password, rutemisor } = req.body;
   
   let browser;
   try {
     browser = await puppeteer.launch({ 
-      headless: "new", // Modo optimizado
+      headless: "new",
       args: [
         '--no-sandbox', 
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--single-process' // Recomendado para Railway
+        '--single-process'
       ]
     });
     
     const page = await browser.newPage();
+    // User-Agent actualizado para evitar bloqueos del SII [cite: 16]
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-
-    // 1. LOGIN
-    await page.goto(url || 'https://zeusr.sii.cl/AUT2000/InicioAutenticacion/IngresoRutClave.html', { 
-      waitUntil: 'networkidle2',
-      timeout: 60000 
-    });
+    
+    // 1. LOGIN SII
+    const loginUrl = url || 'https://zeusr.sii.cl/AUT2000/InicioAutenticacion/IngresoRutClave.html';
+    await page.goto(loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
     
     await page.waitForSelector('input[name*="rutcntr"]');
     await page.type('input[name*="rutcntr"]', rutautorizado);
     await page.type('input[type="password"]', password);
     
-    // Click y esperar navegación
     await Promise.all([
         page.click('button[type="submit"], input[type="submit"]'),
         page.waitForNavigation({ waitUntil: 'networkidle2' })
     ]);
 
-    // 2. Navegación por menús (Uso de XPath para mayor precisión con el texto)
-    const navegarYClick = async (texto) => {
-        const linkEx = `//a[contains(translate(., "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "${texto.toLowerCase()}")]`;
-        await page.waitForXPath(linkEx, { visible: true, timeout: 10000 });
-        const [link] = await page.$x(linkEx);
+    // Función auxiliar para navegar por texto de forma robusta
+    const clickPorTexto = async (texto) => {
+        const xpath = `//a[contains(translate(., "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "${texto.toLowerCase()}")]`;
+        await page.waitForXPath(xpath, { visible: true, timeout: 15000 });
+        const [elemento] = await page.$x(xpath);
         await Promise.all([
-            link.click(),
-            page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {}) 
+            elemento.click(),
+            page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {})
         ]);
     };
 
-    await navegarYClick("Continuar");
-    await navegarYClick("Servicios online");
-    await navegarYClick("Boletas de honorarios electrónicas");
-    await navegarYClick("Emisor de boleta de honorarios");
-    await navegarYClick("Emitir boleta de honorarios electrónica");
-    await navegarYClick("Por usuario autorizado con datos usados anteriormente");
+    // 2. Secuencia de navegación [cite: 18, 19, 20]
+    await clickPorTexto("Continuar");
+    await clickPorTexto("Servicios online");
+    await clickPorTexto("Boletas de honorarios electrónicas");
+    await clickPorTexto("Emisor de boleta de honorarios");
+    await clickPorTexto("Emitir boleta de honorarios electrónica");
+    await clickPorTexto("Por usuario autorizado con datos usados anteriormente");
 
-    // Click en el RUT del emisor específico
-    await navegarYClick(rutemisor);
+    // 3. Click en RUT Emisor específico [cite: 20]
+    await clickPorTexto(rutemisor);
     
     const finalUrl = page.url();
     await browser.close();
     
+    // Respuesta exitosa siempre en JSON
     res.json({ success: true, finalUrl });
     
   } catch (error) {
     if (browser) await browser.close();
+    console.error("Error en Robot:", error.message);
+    // Garantizamos que el error también sea un JSON válido para Laravel [cite: 22, 32]
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Railway asigna el puerto automáticamente en process.env.PORT
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🤖 Robot SII en puerto ${PORT}`));
+app.listen(PORT, () => console.log('🤖 Robot SII Online en Railway'));
