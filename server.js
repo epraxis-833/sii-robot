@@ -1,90 +1,77 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
 const cors = require('cors');
-
 const app = express();
 
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 
 app.post('/sii-navigate', async (req, res) => {
-    const { url, rutautorizado, password, rutemisor } = req.body;
-
-    if (!rutautorizado || !password || !rutemisor) {
-        return res.status(400).json({ success: false, error: "Faltan datos obligatorios." });
-    }
-
+    const { rutautorizado, password, rutemisor } = req.body;
+    
     let browser;
     try {
-        console.log(`Iniciando navegación para RUT: ${rutautorizado}`);
-
+        console.log(`Iniciando proceso para RUT: ${rutautorizado}`);
+        
         browser = await puppeteer.launch({
             headless: "new",
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--single-process',
-                '--no-zygote'
+                '--single-process'
             ]
         });
 
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-        // 1. Login
-        const targetUrl = url || 'https://zeusr.sii.cl/AUT2000/InicioAutenticacion/IngresoRutClave.html';
-        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+        // Login
+        await page.goto('https://zeusr.sii.cl/AUT2000/InicioAutenticacion/IngresoRutClave.html', { 
+            waitUntil: 'networkidle2',
+            timeout: 60000 
+        });
 
-        await page.waitForSelector('input[name*="rutcntr"]', { timeout: 10000 });
         await page.type('input[name*="rutcntr"]', rutautorizado);
         await page.type('input[type="password"]', password);
-
+        
         await Promise.all([
             page.click('button[type="submit"], input[type="submit"]'),
             page.waitForNavigation({ waitUntil: 'networkidle2' })
         ]);
 
-        // Función para navegar por texto (más estable en Railway)
-        const clickLinkByText = async (text) => {
+        // Función para navegar por texto
+        const clickByText = async (text) => {
             const xpath = `//a[contains(translate(., "ABCDEFGHIJKLMNÑOPQRSTUVWXYZ", "abcdefghijklmnñopqrstuvwxyz"), "${text.toLowerCase()}")]`;
             await page.waitForXPath(xpath, { visible: true, timeout: 15000 });
             const [link] = await page.$x(xpath);
-            if (link) {
-                await Promise.all([
-                    link.click(),
-                    page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {})
-                ]);
-            }
+            await Promise.all([
+                link.click(),
+                page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {})
+            ]);
         };
 
-        // 2. Pasos de navegación
-        await clickLinkByText("Continuar");
-        await clickLinkByText("Servicios online");
-        await clickLinkByText("Boletas de honorarios electrónicas");
-        await clickLinkByText("Emisor de boleta de honorarios");
-        await clickLinkByText("Emitir boleta de honorarios electrónica");
-        await clickLinkByText("Por usuario autorizado con datos usados anteriormente");
-
-        // 3. Selección del RUT emisor
-        await clickLinkByText(rutemisor);
+        await clickByText("Servicios online");
+        await clickByText("Boletas de honorarios electrónicas");
+        await clickByText("Emisor de boleta de honorarios");
+        await clickByText("Emitir boleta de honorarios electrónica");
+        await clickByText("Por usuario autorizado con datos usados anteriormente");
+        await clickByText(rutemisor);
 
         const finalUrl = page.url();
         await browser.close();
 
-        return res.json({ success: true, finalUrl });
+        res.json({ success: true, finalUrl });
 
     } catch (error) {
-        console.error("Error en Robot:", error.message);
         if (browser) await browser.close();
-        return res.status(500).json({ success: false, error: error.message });
+        console.error("Error en Railway:", error.message);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
-// Railway requiere que el servidor escuche en 0.0.0.0
+// IMPORTANTE: Escuchar en 0.0.0.0 y usar el puerto de Railway
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🤖 Robot activo en puerto ${PORT} con 8GB de RAM disponibles.`);
+    console.log(`Servidor escuchando en puerto ${PORT}`);
 });
