@@ -33,27 +33,30 @@ app.post('/sii-navigate', async (req, res) => {
     await page.click(loginButton);
     await page.waitForNavigation({ waitUntil: 'networkidle2' });
 
-    // NUEVA FUNCIÓN PARA HACER CLICK POR TEXTO (Compatible con Puppeteer 23)
+    // NUEVA FUNCIÓN: Click por texto usando Locators (Puppeteer 23+)
     const clickByText = async (text) => {
         console.log(`🖱️ Intentando click en: ${text}`);
-        // Usamos el selector de texto nativo de Puppeteer que es más moderno y estable
-        const linkSelector = `::-p-xpath(//a[contains(translate(., "ABCDEFGHIJKLMNÑOPQRSTUVWXYZ", "abcdefghijklmnñopqrstuvwxyz"), "${text.toLowerCase()}")])`;
-        await page.waitForSelector(linkSelector, { visible: true, timeout: 20000 });
-        const link = await page.$(linkSelector);
+        // Buscamos un enlace <a> que contenga el texto (sin importar mayúsculas/minúsculas)
+        const element = page.locator('a').filter(el => 
+            el.innerText.toLowerCase().includes(text.toLowerCase())
+        ).first();
+
+        await element.setTimeout(20000); // Esperar hasta 20 segundos
         
         await Promise.all([
-            link.click(),
+            element.click(),
             page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {})
         ]);
     };
 
     // 2. NAVEGACIÓN PASO A PASO
+    // Nota: Usamos fragmentos de texto únicos para cada paso
     await clickByText("Continuar");
     await clickByText("Servicios online");
-    await clickByText("Boletas de honorarios electrónicas");
-    await clickByText("Emisor de boleta de honorarios");
-    await clickByText("Emitir boleta de honorarios electrónica");
-    await clickByText("Por usuario autorizado con datos usados anteriormente");
+    await clickByText("Boletas de honorarios");
+    await clickByText("Emisor de boleta");
+    await clickByText("Emitir boleta de honorarios");
+    await clickByText("Por usuario autorizado");
     
     // 3. SELECCIONAR RUT EMISOR
     await clickByText(rutemisor);
