@@ -30,27 +30,40 @@ app.post('/sii-navigate', async (req, res) => {
     await page.type('input[type="password"]', password);
     
     const loginButton = 'button[type="submit"], input[type="submit"], #bt_ingresar';
-    await page.click(loginButton);
-    await page.waitForNavigation({ waitUntil: 'networkidle2' });
+    await Promise.all([
+        page.click(loginButton),
+        page.waitForNavigation({ waitUntil: 'networkidle2' })
+    ]);
 
-    // NUEVA FUNCIÓN: Click por texto usando Locators (Puppeteer 23+)
+    // NUEVA FUNCIÓN: Búsqueda manual en el DOM (La más compatible)
     const clickByText = async (text) => {
-        console.log(`🖱️ Intentando click en: ${text}`);
-        // Buscamos un enlace <a> que contenga el texto (sin importar mayúsculas/minúsculas)
-        const element = page.locator('a').filter(el => 
-            el.innerText.toLowerCase().includes(text.toLowerCase())
-        ).first();
-
-        await element.setTimeout(20000); // Esperar hasta 20 segundos
+        console.log(`🖱️ Buscando enlace: ${text}`);
         
-        await Promise.all([
-            element.click(),
-            page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {})
-        ]);
+        // Esperamos un momento a que la página cargue elementos
+        await new Promise(r => setTimeout(r, 2000));
+
+        const clicked = await page.evaluate((searchText) => {
+            const anchors = Array.from(document.querySelectorAll('a, button'));
+            const target = anchors.find(a => 
+                a.innerText.toLowerCase().includes(searchText.toLowerCase())
+            );
+            if (target) {
+                target.click();
+                return true;
+            }
+            return false;
+        }, text);
+
+        if (!clicked) {
+            throw new Error(`No se encontró el enlace con texto: ${text}`);
+        }
+
+        await page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {
+            console.log("Aviso: Navegación lenta o no requerida tras click.");
+        });
     };
 
-    // 2. NAVEGACIÓN PASO A PASO
-    // Nota: Usamos fragmentos de texto únicos para cada paso
+    // 2. NAVEGACIÓN
     await clickByText("Continuar");
     await clickByText("Servicios online");
     await clickByText("Boletas de honorarios");
@@ -64,12 +77,12 @@ app.post('/sii-navigate', async (req, res) => {
     const finalUrl = page.url();
     await browser.close();
     
-    console.log("✅ Navegación terminada exitosamente.");
+    console.log("✅ Proceso terminado con éxito.");
     res.json({ success: true, finalUrl });
     
   } catch (error) {
     if (browser) await browser.close();
-    console.error("❌ Error en el proceso:", error.message);
+    console.error("❌ Error:", error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
