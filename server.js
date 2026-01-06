@@ -17,6 +17,7 @@ app.post('/sii-navigate', async (req, res) => {
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process']
     });
     const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 800 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
     // 1. LOGIN
@@ -35,16 +36,14 @@ app.post('/sii-navigate', async (req, res) => {
         page.waitForNavigation({ waitUntil: 'networkidle2' })
     ]);
 
-    // NUEVA FUNCIÓN: Búsqueda manual en el DOM (La más compatible)
-    const clickByText = async (text) => {
-        console.log(`🖱️ Buscando enlace: ${text}`);
-        
-        // Esperamos un momento a que la página cargue elementos
-        await new Promise(r => setTimeout(r, 2000));
+    // FUNCIÓN MEJORADA: Intenta hacer click, pero no muere si no encuentra el texto
+    const clickByText = async (text, isOptional = false) => {
+        console.log(`🖱️ Buscando: ${text}`);
+        await new Promise(r => setTimeout(r, 2000)); // Espera pequeña para carga
 
         const clicked = await page.evaluate((searchText) => {
-            const anchors = Array.from(document.querySelectorAll('a, button'));
-            const target = anchors.find(a => 
+            const elements = Array.from(document.querySelectorAll('a, button, span, b'));
+            const target = elements.find(a => 
                 a.innerText.toLowerCase().includes(searchText.toLowerCase())
             );
             if (target) {
@@ -54,17 +53,23 @@ app.post('/sii-navigate', async (req, res) => {
             return false;
         }, text);
 
-        if (!clicked) {
-            throw new Error(`No se encontró el enlace con texto: ${text}`);
+        if (clicked) {
+            console.log(`✅ Click en: ${text}`);
+            try {
+                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 5000 });
+            } catch (e) {
+                // Ignorar timeout de navegación si el click no cambió de página
+            }
+        } else {
+            if (!isOptional) {
+                throw new Error(`No se encontró el enlace con texto: ${text}`);
+            }
+            console.log(`⚠️ No se encontró "${text}", saltando...`);
         }
-
-        await page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {
-            console.log("Aviso: Navegación lenta o no requerida tras click.");
-        });
     };
 
-    // 2. NAVEGACIÓN
-    await clickByText("Continuar");
+    // 2. NAVEGACIÓN (Continuar es opcional ahora)
+    await clickByText("Continuar", true); 
     await clickByText("Servicios online");
     await clickByText("Boletas de honorarios");
     await clickByText("Emisor de boleta");
