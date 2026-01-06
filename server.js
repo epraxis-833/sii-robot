@@ -11,7 +11,7 @@ app.post('/sii-navigate', async (req, res) => {
   let browser;
   
   try {
-    console.log(`🚀 Iniciando navegación para: ${rutemisor}`);
+    console.log(`🚀 Iniciando navegación para emisor: ${rutemisor}`);
     browser = await puppeteer.launch({ 
       headless: "new",
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process']
@@ -23,7 +23,8 @@ app.post('/sii-navigate', async (req, res) => {
 
     // --- 1. LOGIN ---
     await page.goto('https://zeusr.sii.cl/AUT2000/InicioAutenticacion/IngresoRutClave.html', { waitUntil: 'networkidle2' });
-    await new Promise(r => setTimeout(r, 4000));
+    await new Promise(r => setTimeout(r, 3000));
+    
     await page.type('input[name*="rutcntr"]', rutautorizado, { delay: 50 });
     await page.type('input[type="password"]', password, { delay: 50 });
     
@@ -32,103 +33,82 @@ app.post('/sii-navigate', async (req, res) => {
         page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {})
     ]);
 
-    // --- FUNCIÓN DE LIMPIEZA CONSTANTE ---
-    const clearPopups = async () => {
-        await page.evaluate(() => {
-            // Cerramos cualquier cosa que diga "Cerrar" o tenga una "X"
-            const buttons = Array.from(document.querySelectorAll('button, a, span, .close'));
-            const close = buttons.find(b => b.innerText.toLowerCase().includes('cerrar') || b.innerText === 'x');
-            if (close) close.click();
-            // Removemos capas grises que bloquean el click
-            document.querySelectorAll('.modal-backdrop, .modal, #myModal').forEach(m => m.remove());
-            document.body.classList.remove('modal-open');
-        }).catch(() => {});
+    // --- FUNCIÓN DE CLICK ROBUSTA (Normaliza texto y limpia popups) ---
+    const clickInteligente = async (texto) => {
+        console.log(`🔎 Buscando: "${texto}"`);
+        const found = await page.evaluate((t) => {
+            const el = Array.from(document.querySelectorAll('a, button, span, h4'))
+                      .find(e => e.innerText.replace(/\s+/g, ' ').trim().includes(t));
+            if (el) { el.scrollIntoView(); el.click(); return true; }
+            return false;
+        }, texto);
+        if (found) await new Promise(r => setTimeout(r, 4000));
+        return found;
     };
 
-    // --- FUNCIÓN DE CLICK INTELIGENTE ---
-    const smartClick = async (text, fallbackUrl = null) => {
-        await clearPopups();
-        console.log(`🔎 Buscando: ${text}`);
+    // --- 2. NAVEGACIÓN PASO A PASO ---
+    await clickInteligente('Continuar'); // Opcional
+    
+    // Si no vemos el menú, vamos directo a la zona de Boletas
+    const menuOk = await clickInteligente('Servicios online');
+    if (!menuOk) await page.goto('https://www.sii.cl/servicios_online/', { waitUntil: 'networkidle2' });
+
+    await clickInteligente('Boletas de honorarios electrónicas');
+    await clickInteligente('Emisor de boleta de honorarios');
+    await clickInteligente('Emitir boleta de honorarios electrónica');
+    
+    // Este click es el que nos lleva a la tabla de tu Imagen 3
+    await clickInteligente('Por usuario autorizado con datos usados anteriormente');
+
+    // --- 3. SELECCIÓN DEL RUT (Modo "Multi-Frame" para evitar el error []) ---
+    const rutBuscado = rutemisor.includes('-') ? rutemisor : rutemisor.replace(/^(\d+)(\d)$/, '$1-$2');
+    console.log(`🎯 Buscando RUT en tabla: ${rutBuscado}`);
+    
+    await new Promise(r => setTimeout(r, 7000)); // Espera extendida para la tabla antigua
+
+    let rutClickado = false;
+    
+    // Buscamos en la página principal Y en todos los IFRAMES posibles
+    const contexts = [page, ...page.frames()];
+    
+    for (const context of contexts) {
+        if (rutClickado) break;
         
-        const success = await page.evaluate((t) => {
-            const elements = Array.from(document.querySelectorAll('a, button, span, li, h4'));
-            const target = elements.find(el => el.innerText.replace(/\s+/g, ' ').trim().includes(t));
-            if (target) {
-                target.scrollIntoView();
-                target.click();
+        rutClickado = await context.evaluate((target) => {
+            const links = Array.from(document.querySelectorAll('a'));
+            const match = links.find(a => {
+                const cleanText = a.innerText.trim().replace(/\./g, '');
+                const cleanTarget = target.replace(/\./g, '');
+                return cleanText === cleanTarget;
+            });
+
+            if (match) {
+                match.click();
                 return true;
             }
             return false;
-        }, text);
-
-        if (success) {
-            await new Promise(r => setTimeout(r, 3500));
-            return true;
-        } else if (fallbackUrl) {
-            console.log(`⚠️ No se halló "${text}", usando atajo URL...`);
-            await page.goto(fallbackUrl, { waitUntil: 'networkidle2' });
-            return true;
-        }
-        return false;
-    };
-
-    // --- 2. NAVEGACIÓN (Usando tus capturas de consola como guía) ---
-    
-    await smartClick('Continuar'); // Si no está, no pasa nada
-    
-    // Si falla el menú "Servicios online", saltamos directo a la sección
-    await smartClick('Servicios online', 'https://www.sii.cl/servicios_online/');
-
-    await smartClick('Boletas de honorarios electrónicas');
-    await smartClick('Emisor de boleta de honorarios');
-    await smartClick('Emitir boleta de honorarios electrónica');
-    
-    // Aquí usamos la URL directa del paso final si el link falla
-    await smartClick('Por usuario autorizado con datos usados anteriormente', 'https://www4.sii.cl/bhfeemisorui/index.html#/emision/usuario-autorizado');
-
-    // --- 3. SELECCIÓN DEL RUT (Basado en tu Imagen 3) ---
-    const rutLimpio = rutemisor.replace(/\D/g, '');
-    const rutConGuion = rutLimpio.replace(/^(\d+)(\d)$/, '$1-$2');
-    
-    console.log(`🎯 Buscando emisor: ${rutConGuion}`);
-    await new Promise(r => setTimeout(r, 6000)); // Espera extra para la tabla
-    await clearPopups();
-
-    const rutSeleccionado = await page.evaluate((exacto, numerico) => {
-        // Buscamos en todos los links de la tabla
-        const links = Array.from(document.querySelectorAll('table a, .table a, a'));
-        const match = links.find(a => {
-            const txt = a.innerText.trim();
-            const nums = txt.replace(/\D/g, '');
-            return txt === exacto || (nums === numerico && nums.length > 0);
-        });
-
-        if (match) {
-            match.click();
-            return true;
-        }
-        return false;
-    }, rutConGuion, rutLimpio);
-
-    if (!rutSeleccionado) {
-        throw new Error(`RUT ${rutConGuion} no hallado en la tabla final.`);
+        }, rutBuscado).catch(() => false);
     }
 
-    // --- 4. VERIFICACIÓN FINAL ---
-    await new Promise(r => setTimeout(r, 5000));
-    const urlFinal = page.url();
-    
-    console.log("✅ Navegación completada con éxito.");
-    res.json({ success: true, finalUrl: urlFinal });
+    if (!rutClickado) {
+        // Diagnóstico: ¿Qué hay en la página realmente?
+        const dump = await page.evaluate(() => document.body.innerText.slice(0, 200));
+        throw new Error(`RUT no encontrado. Texto visible: ${dump}...`);
+    }
 
+    // --- 4. CIERRE ---
+    await new Promise(r => setTimeout(r, 5000));
+    console.log("✅ Selección exitosa.");
+    
+    res.json({ success: true, urlActual: page.url() });
     await browser.close();
 
   } catch (error) {
     if (browser) await browser.close();
-    console.error(`❌ ERROR: ${error.message}`);
+    console.error(`❌ ERROR CRÍTICO: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0');
+app.listen(PORT, '0.0.0.0', () => console.log(`🤖 Robot activo en puerto ${PORT}`));
