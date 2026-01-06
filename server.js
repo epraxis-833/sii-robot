@@ -19,7 +19,7 @@ app.post('/sii-navigate', async (req, res) => {
     await page.setViewport({ width: 1366, height: 1024 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    // 1. LOGIN (Simulando tus pauses de 1500ms y 5000ms)
+    // 1. LOGIN (Con tus pausas de Dusk)
     console.log("🔑 Iniciando sesión...");
     await page.goto('https://zeusr.sii.cl/AUT2000/InicioAutenticacion/IngresoRutClave.html', { waitUntil: 'networkidle2' });
     await new Promise(r => setTimeout(r, 5000));
@@ -31,22 +31,26 @@ app.post('/sii-navigate', async (req, res) => {
     
     await Promise.all([
         page.click('#bt_ingresar'),
-        page.waitForNavigation({ waitUntil: 'networkidle2' })
+        page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {})
     ]);
     await new Promise(r => setTimeout(r, 5000));
 
-    // FUNCIÓN PARA REPLICAR clickLink() DE DUSK
-    const duskClick = async (text, timeout = 10) => {
-        console.log(`🖱️ clickLink: ${text}`);
-        // Limpiamos avisos antes de buscar el texto (como el modal del 14.5%)
+    // FUNCIÓN REPLICADA DE Dusk ->clickLink() pero OPCIONAL
+    const duskClick = async (text, isOptional = false) => {
+        console.log(`🖱️ Intentando clickLink: ${text}`);
+        
+        // Limpieza de avisos (como el del 14.5% o el de Chrome)
         await page.evaluate(() => {
-            const modalBtn = Array.from(document.querySelectorAll('button, a')).find(b => b.innerText.includes('Cerrar'));
-            if (modalBtn) modalBtn.click();
+            const buttons = Array.from(document.querySelectorAll('button, a, span'));
+            const close = buttons.find(b => b.innerText.toLowerCase().includes('cerrar') || b.innerText === 'x');
+            if (close) close.click();
+            // Quitar capas oscuras que bloquean
+            document.querySelectorAll('.modal-backdrop').forEach(mb => mb.remove());
         }).catch(() => {});
 
         const clicked = await page.evaluate((t) => {
-            const anchors = Array.from(document.querySelectorAll('a, button, span'));
-            const target = anchors.find(a => a.innerText.trim().includes(t));
+            const elements = Array.from(document.querySelectorAll('a, button, span, li, h4'));
+            const target = elements.find(el => el.innerText.trim().includes(t));
             if (target) {
                 target.scrollIntoView();
                 target.click();
@@ -55,21 +59,33 @@ app.post('/sii-navigate', async (req, res) => {
             return false;
         }, text);
 
-        if (!clicked) throw new Error(`Dusk no encontró el texto: ${text}`);
-        await new Promise(r => setTimeout(r, 3000)); // Pause(3000) de tu código
+        if (clicked) {
+            console.log(`✅ Éxito en: ${text}`);
+            await new Promise(r => setTimeout(r, 3000)); // Pause(3000)
+            return true;
+        } else if (!isOptional) {
+            throw new Error(`Dusk falló: No se encontró "${text}"`);
+        }
+        console.log(`⚠️ No se encontró "${text}", pero es opcional. Continuando...`);
+        return false;
     };
 
-    // 2. NAVEGACIÓN (Réplica exacta de tus comandos Dusk)
-    await duskClick('Continuar');
+    // 2. NAVEGACIÓN (Siguiendo tu lógica PHP punto por punto)
+    
+    // El botón "Continuar" a veces no sale, por eso lo ponemos como opcional (true)
+    await duskClick('Continuar', true); 
+    
     await duskClick('Servicios online');
     await duskClick('Boletas de honorarios electrónicas');
     await duskClick('Emisor de boleta de honorarios');
     await duskClick('Emitir boleta de honorarios electrónica');
+    
+    // Este es el paso clave de tu código local
     await duskClick('Por usuario autorizado con datos usados anteriormente');
 
-    // 3. SELECCIÓN DEL RUT EMISOR
-    console.log(`🎯 Buscando link del RUT: ${rutemisor}`);
-    await new Promise(r => setTimeout(r, 5000)); // SII carga lento en este paso
+    // 3. SELECCIÓN DEL RUT EMISOR (Carga lenta 5000ms)
+    console.log(`🎯 Buscando emisor: ${rutemisor}`);
+    await new Promise(r => setTimeout(r, 5000));
 
     const rutSelected = await page.evaluate((rut) => {
         const cleanTarget = rut.replace(/\D/g, '');
@@ -82,21 +98,21 @@ app.post('/sii-navigate', async (req, res) => {
         return false;
     }, rutemisor);
 
-    if (!rutSelected) throw new Error(`No se encontró el link del RUT ${rutemisor}`);
+    if (!rutSelected) {
+        // Reporte de error con lo que hay en pantalla
+        const screenText = await page.evaluate(() => document.body.innerText.substring(0, 300));
+        throw new Error(`No se encontró el RUT ${rutemisor}. Texto en pantalla: ${screenText}`);
+    }
 
-    await new Promise(r => setTimeout(r, 5000)); // Pause final
+    await new Promise(r => setTimeout(r, 5000));
     
-    console.log("✅ Proceso completado exitosamente.");
-    res.json({ 
-        success: true, 
-        finalUrl: page.url() 
-    });
-
+    console.log("✅ Navegación completada.");
+    res.json({ success: true, finalUrl: page.url() });
     await browser.close();
 
   } catch (error) {
     if (browser) await browser.close();
-    console.error(`❌ Error Estilo Dusk: ${error.message}`);
+    console.error(`❌ ERROR: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
 });
