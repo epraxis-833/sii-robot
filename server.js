@@ -8,7 +8,7 @@ app.use(express.json({limit: '10mb'}));
 
 app.post('/sii-navigate', async (req, res) => {
   const { rutautorizado, password, rutemisor } = req.body;
-  console.log(`📥 Procesando solicitud para RUT: ${rutautorizado}`);
+  console.log(`📥 Procesando solicitud para RUT Autorizado: ${rutautorizado}`);
   
   let browser;
   try {
@@ -17,6 +17,7 @@ app.post('/sii-navigate', async (req, res) => {
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process']
     });
     const page = await browser.newPage();
+    // Definimos un tamaño de pantalla estándar para evitar elementos ocultos
     await page.setViewport({ width: 1280, height: 900 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
@@ -36,7 +37,7 @@ app.post('/sii-navigate', async (req, res) => {
         page.waitForNavigation({ waitUntil: 'networkidle2' })
     ]);
 
-    // FUNCIÓN DE CLICK ROBUSTA
+    // FUNCIÓN DE CLICK ROBUSTA POR TEXTO
     const clickByText = async (text, isOptional = false) => {
         console.log(`🖱️ Buscando: ${text}`);
         await new Promise(r => setTimeout(r, 2000)); 
@@ -56,7 +57,7 @@ app.post('/sii-navigate', async (req, res) => {
         if (clicked) {
             console.log(`✅ Click exitoso en: ${text}`);
             try {
-                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 8000 });
+                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 });
             } catch (e) {}
         } else if (!isOptional) {
             throw new Error(`No se encontró el enlace con texto: ${text}`);
@@ -71,36 +72,39 @@ app.post('/sii-navigate', async (req, res) => {
     await clickByText("Emitir boleta de honorarios");
     await clickByText("Por usuario autorizado");
     
-    // 3. SELECCIÓN DE RUT EMISOR (Lógica de normalización)
-    console.log(`🔎 Buscando RUT Emisor (Normalizado): ${rutemisor}`);
+    // 3. SELECCIÓN DE RUT EMISOR (Optimizado para la tabla SII)
+    console.log(`🔎 Buscando RUT Emisor en tabla: ${rutemisor}`);
     
-    const rutClicked = await page.evaluate((targetRut) => {
-        // Quitamos puntos y pasamos a minúsculas (ej: 19.670.568-6 -> 19670568-6)
-        const cleanTarget = targetRut.replace(/\./g, '').toLowerCase();
+    const rutSeleccionado = await page.evaluate((targetRut) => {
+        // Normalizamos el RUT buscado: solo números y 'k'
+        const cleanTarget = targetRut.replace(/[^0-9kK]/g, '').toLowerCase();
         
-        const elements = Array.from(document.querySelectorAll('a, button, td, span, b'));
-        const target = elements.find(el => {
-            const cleanElText = el.innerText.replace(/\./g, '').toLowerCase();
-            return cleanElText.includes(cleanTarget);
+        // Buscamos específicamente enlaces <a> que suelen estar dentro de la tabla
+        const links = Array.from(document.querySelectorAll('table a, table td a'));
+        
+        const targetLink = links.find(a => {
+            const cleanText = a.innerText.replace(/[^0-9kK]/g, '').toLowerCase();
+            return cleanText === cleanTarget;
         });
 
-        if (target) {
-            target.click();
+        if (targetLink) {
+            targetLink.click();
             return true;
         }
         return false;
     }, rutemisor);
 
-    if (!rutClicked) {
-        throw new Error(`No se encontró el RUT emisor: ${rutemisor} en la lista de autorizados.`);
+    if (!rutSeleccionado) {
+        throw new Error(`El RUT emisor ${rutemisor} no fue encontrado en la tabla de autorizados.`);
     }
 
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 }).catch(() => {});
+    // Espera final para llegar a la página de la boleta
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
     
     const finalUrl = page.url();
     await browser.close();
     
-    console.log("✅ Navegación terminada con éxito.");
+    console.log("✅ Proceso completado.");
     res.json({ success: true, finalUrl });
     
   } catch (error) {
