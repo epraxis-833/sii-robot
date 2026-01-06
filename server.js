@@ -28,71 +28,84 @@ app.post('/sii-navigate', async (req, res) => {
         page.waitForNavigation({ waitUntil: 'networkidle2' })
     ]);
 
-    // FUNCIÓN PARA CERRAR AVISOS (Basado en el segundo 0:34 de tu video)
-    const closePopups = async () => {
+    // FUNCIÓN PARA CERRAR AVISOS (Segundo 0:34 del video)
+    const clearModals = async () => {
         await page.evaluate(() => {
-            const buttons = Array.from(document.querySelectorAll('button, a, span'));
-            const closeBtn = buttons.find(b => 
-                b.innerText.toLowerCase().includes('cerrar') || 
-                b.innerText.toLowerCase().includes('aceptar')
-            );
+            const buttons = Array.from(document.querySelectorAll('button, a, span, .close, .modal-footer button'));
+            const closeBtn = buttons.find(b => {
+                const t = b.innerText.toLowerCase();
+                return t.includes('cerrar') || t.includes('aceptar') || t === 'x';
+            });
             if (closeBtn) closeBtn.click();
         }).catch(() => {});
         await new Promise(r => setTimeout(r, 1000));
     };
 
-    // FUNCIÓN DE CLICK SIN ESPERAR NAVEGACIÓN (Para menús desplegables 0:38)
-    const simpleClick = async (text) => {
-        console.log(`🖱️ Clic en: ${text}`);
-        await closePopups();
-        const clicked = await page.evaluate((t) => {
-            const elements = Array.from(document.querySelectorAll('a, li, span, b'));
+    // FUNCIÓN PARA CLIC EN MENÚS (Segundo 0:38 del video)
+    const clickMenu = async (text) => {
+        console.log(`🖱️ Intentando clic en: ${text}`);
+        await clearModals(); // Limpiar avisos antes de cada paso
+        
+        const success = await page.evaluate((t) => {
+            // Buscamos específicamente en elementos que el SII usa para sus menús
+            const elements = Array.from(document.querySelectorAll('a, li, span, b, h4'));
             const target = elements.find(el => el.innerText.trim().includes(t));
             if (target) {
+                target.scrollIntoView();
                 target.click();
                 return true;
             }
             return false;
         }, text);
-        if (!clicked) throw new Error(`No se encontró: ${text}`);
-        await new Promise(r => setTimeout(r, 2000)); // Espera a que el menú se despliegue
+
+        if (!success) throw new Error(`No se pudo encontrar o desplegar: ${text}`);
+        // Espera de 2 segundos para que el acordeón/despliegue termine (como se ve en el video)
+        await new Promise(r => setTimeout(r, 2000)); 
     };
 
-    // 2. NAVEGACIÓN SIGUIENDO TU VIDEO
-    // "Servicios online" sí suele navegar a otra página
+    // 2. NAVEGACIÓN PASO A PASO
     await page.goto('https://www.sii.cl/servicios_online/', { waitUntil: 'networkidle2' });
     
-    await simpleClick("Boletas de honorarios");
-    await simpleClick("Emisor de boleta");
-    await simpleClick("Emitir boleta de honorarios");
+    await clickMenu("Boletas de honorarios");
+    await clickMenu("Emisor de boleta");
+    await clickMenu("Emitir boleta de honorarios");
     
-    // Este último paso suele ser un link real
-    console.log("🖱️ Clic final: Por usuario autorizado");
+    // El paso final suele ser un enlace directo que sí cambia la URL
+    console.log("🖱️ Clic en: Por usuario autorizado");
     await Promise.all([
         page.evaluate(() => {
             const el = Array.from(document.querySelectorAll('a')).find(a => a.innerText.includes("Por usuario autorizado"));
             if (el) el.click();
         }),
-        page.waitForNavigation({ waitUntil: 'networkidle2' })
+        page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {})
     ]);
 
-    // 3. SELECCIÓN EN TABLA (Basado en el segundo 0:47 de tu video)
-    console.log(`🎯 Buscando emisor: ${rutemisor}`);
-    await new Promise(r => setTimeout(r, 3000));
+    // 3. SELECCIÓN EN TABLA (Segundo 0:47 del video)
+    console.log(`🎯 Buscando RUT emisor: ${rutemisor}`);
+    await new Promise(r => setTimeout(r, 4000));
 
-    const result = await page.evaluate((target) => {
-        const targetClean = target.replace(/\D/g, '');
+    const tableSelection = await page.evaluate((target) => {
+        const targetClean = target.replace(/\D/g, ''); // 196705686
         const links = Array.from(document.querySelectorAll('table a'));
-        const found = links.find(a => a.innerText.replace(/\D/g, '') === targetClean);
         
+        const found = links.find(a => {
+            const linkClean = a.innerText.replace(/\D/g, '');
+            return linkClean === targetClean && linkClean.length > 0;
+        });
+
         if (found) {
             found.click();
             return { success: true };
         }
-        return { success: false, text: document.body.innerText.substring(0, 500) };
+        return { 
+            success: false, 
+            debug: `Tabla: ${!!document.querySelector('table')}. Texto: ${document.body.innerText.substring(0, 200)}` 
+        };
     }, rutemisor);
 
-    if (!result.success) throw new Error("RUT no hallado en tabla final.");
+    if (!tableSelection.success) {
+        throw new Error(`Fallo en tabla: ${tableSelection.debug}`);
+    }
 
     await page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {});
     const finalUrl = page.url();
@@ -102,9 +115,10 @@ app.post('/sii-navigate', async (req, res) => {
 
   } catch (error) {
     if (browser) await browser.close();
+    console.error(`❌ Error en robot: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0');
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Robot listo en puerto ${PORT}`));
