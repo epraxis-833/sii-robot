@@ -3,139 +3,116 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const cors = require('cors');
 
-// Activamos el plugin de sigilo para evitar ser detectados como robot
 puppeteer.use(StealthPlugin());
 
 const app = express();
 app.use(cors());
-app.use(express.json({limit: '10mb'}));
+app.use(express.json());
 
 app.post('/sii-navigate', async (req, res) => {
     const { rutautorizado, password, rutemisor } = req.body;
     let browser;
     
     try {
-        console.log(`🚀 Iniciando navegación protegida para emisor: ${rutemisor}`);
+        console.log(`🚀 Iniciando bypass avanzado para: ${rutemisor}`);
         
         browser = await puppeteer.launch({ 
             headless: "new",
             args: [
-                '--no-sandbox', 
-                '--disable-setuid-sandbox', 
-                '--disable-dev-shm-usage', 
-                '--single-process',
-                '--disable-blink-features=AutomationControlled'
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled',
+                '--use-gl=desktop', // Simula una tarjeta gráfica real
+                '--disable-web-security',
+                '--lang=es-CL,es' // Fuerza idioma local
             ]
         });
         
         const page = await browser.newPage();
-        await page.setViewport({ width: 1366, height: 768 });
         
-        // --- 1. LOGIN HUMANIZADO ---
+        // --- EMULACIÓN DE HARDWARE REAL ---
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        
+        // 1. LOGIN CON ESPERA DE RED "IDLE0"
         await page.goto('https://zeusr.sii.cl/AUT2000/InicioAutenticacion/IngresoRutClave.html', { 
-            waitUntil: 'networkidle2' 
+            waitUntil: 'networkidle0' 
         });
+
+        await page.type('input[name*="rutcntr"]', rutautorizado, { delay: 180 });
+        await page.type('input[type="password"]', password, { delay: 200 });
         
-        // Escribimos con retraso aleatorio entre teclas
-        await page.type('input[name*="rutcntr"]', rutautorizado, { delay: 120 });
-        await page.type('input[type="password"]', password, { delay: 150 });
-        
+        // Clic y espera larga para que el servidor del SII registre la sesión
         await Promise.all([
             page.click('#bt_ingresar'),
-            page.waitForNavigation({ waitUntil: 'networkidle0' })
+            page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 60000 })
         ]);
 
-        console.log("✅ Sesión iniciada. Esperando estabilización...");
-        await new Promise(r => setTimeout(r, 4000)); // Pausa para asentar cookies
+        console.log("✅ Sesión iniciada. Esperando 8 segundos para burlar el rastreador...");
+        await new Promise(r => setTimeout(r, 8000));
 
-        // --- FUNCIÓN PARA HACER CLIC SIN SER DETECTADO ---
-        const smartClick = async (text) => {
-            console.log(`🖱️ Buscando: ${text}`);
-            
-            // Verificamos si nos botó al login antes de cada acción
-            const isLoggedOut = await page.evaluate(() => 
-                document.body.innerText.includes("Ingresar a Mi Sii")
-            );
-            if (isLoggedOut) throw new Error("Sesión cerrada por el SII.");
-
-            const clicked = await page.evaluate((t) => {
-                const elements = Array.from(document.querySelectorAll('a, button, h4, span, li'));
-                const target = elements.find(el => el.innerText.replace(/\s+/g, ' ').trim().includes(t));
-                if (target) {
-                    target.scrollIntoView();
-                    target.click();
-                    return true;
-                }
-                return false;
-            }, text);
-
-            if (clicked) {
-                await new Promise(r => setTimeout(r, 3000));
-                return true;
+        // --- 2. TRUCO DE RE-DIRECCIÓN (Si nos bota, reintentamos una vez) ---
+        const checkSession = async () => {
+            const isOut = await page.evaluate(() => document.body.innerText.includes("Ingresar a Mi Sii"));
+            if (isOut) {
+                console.log("⚠️ Detectado re-login, intentando refrescar sesión...");
+                await page.reload({ waitUntil: 'networkidle0' });
             }
-            return false;
         };
 
-        // --- 2. FLUJO DE NAVEGACIÓN ORGÁNICA (Sin saltos de URL) ---
-        await smartClick('Continuar'); // Opcional, si aparece el cartel de aviso
-        
-        await smartClick('Servicios online');
-        await smartClick('Boletas de honorarios electrónicas');
-        await smartClick('Emisor de boleta de honorarios');
-        await smartClick('Emitir boleta de honorarios electrónica');
-        
-        // Paso clave de tu Imagen 2
-        const finalStep = await smartClick('Por usuario autorizado con datos usados anteriormente');
-        if (!finalStep) {
-            console.log("⚠️ No se halló el link de usuario autorizado, intentando re-scaneo...");
-        }
+        // --- 3. NAVEGACIÓN PASO A PASO ---
+        const pasos = [
+            'Servicios online',
+            'Boletas de honorarios electrónicas',
+            'Emisor de boleta de honorarios',
+            'Emitir boleta de honorarios electrónica',
+            'Por usuario autorizado con datos usados anteriormente'
+        ];
 
-        // --- 3. SELECCIÓN DE RUT EN TABLA (Multi-Frame) ---
-        const rutLimpio = rutemisor.replace(/\D/g, ''); // 196705686
-        console.log(`🎯 Buscando RUT en la tabla: ${rutLimpio}`);
-        
-        await new Promise(r => setTimeout(r, 7000)); // La tabla del SII es lenta
-
-        let rutSeleccionado = false;
-        const frames = [page, ...page.frames()];
-
-        for (const frame of frames) {
-            rutSeleccionado = await frame.evaluate((target) => {
-                const links = Array.from(document.querySelectorAll('table a, a'));
-                const match = links.find(a => a.innerText.replace(/\D/g, '') === target);
-                if (match) {
-                    match.click();
-                    return true;
-                }
+        for (const paso of pasos) {
+            await checkSession();
+            console.log(`🖱️ Clic en: ${paso}`);
+            
+            const clickOk = await page.evaluate((txt) => {
+                const els = Array.from(document.querySelectorAll('a, h4, span, li'));
+                const target = els.find(e => e.innerText.trim().includes(txt));
+                if (target) { target.click(); return true; }
                 return false;
-            }, rutLimpio).catch(() => false);
+            }, paso);
 
-            if (rutSeleccionado) break;
+            if (!clickOk) {
+                // Si falla el clic, intentamos forzar la URL del menú si es posible
+                console.log(`⚠️ No se pudo clickear ${paso}, continuando...`);
+            }
+            await new Promise(r => setTimeout(r, 4000));
         }
 
-        if (!rutSeleccionado) {
-            throw new Error(`RUT ${rutemisor} no encontrado en la tabla de emisores.`);
-        }
-
-        // --- 4. RESPUESTA FINAL ---
-        await new Promise(r => setTimeout(r, 5000));
-        console.log("✅ Navegación completa. Robot en página de emisión.");
+        // --- 4. SELECCIÓN EN TABLA (MODO IFRAME) ---
+        console.log(`🎯 Buscando emisor: ${rutemisor}`);
+        const rutLimpio = rutemisor.replace(/\D/g, '');
         
-        res.json({ 
-            success: true, 
-            finalUrl: page.url() 
-        });
+        // Esperamos a que la tabla cargue realmente
+        await page.waitForNetworkIdle({ timeout: 10000 }).catch(() => {});
+
+        const finalSuccess = await page.evaluate((target) => {
+            const links = Array.from(document.querySelectorAll('a'));
+            const match = links.find(a => a.innerText.replace(/\D/g, '') === target);
+            if (match) { match.click(); return true; }
+            return false;
+        }, rutLimpio);
+
+        if (!finalSuccess) throw new Error("RUT no hallado en la tabla final.");
+
+        await new Promise(r => setTimeout(r, 4000));
+        res.json({ success: true, finalUrl: page.url() });
 
         await browser.close();
 
     } catch (error) {
         if (browser) await browser.close();
-        console.error(`❌ ERROR CRÍTICO: ${error.message}`);
+        console.error(`❌ ERROR: ${error.message}`);
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🤖 Servidor con Blindaje Stealth escuchando en puerto ${PORT}`);
-});
+app.listen(PORT, '0.0.0.0');
