@@ -29,32 +29,32 @@ app.post('/sii-navigate', async (req, res) => {
         page.waitForNavigation({ waitUntil: 'networkidle2' })
     ]);
 
-    // 2. IR DIRECTO A SERVICIOS ONLINE (Para evitar menús intermedios)
+    // 2. NAVEGACIÓN DIRECTA A SERVICIOS
     console.log("📂 Navegando a Servicios Online...");
     await page.goto('https://www.sii.cl/servicios_online/', { waitUntil: 'networkidle2' });
 
-    // FUNCIÓN PARA ELIMINAR CUALQUIER OBSTÁCULO (Pop-ups del video 0:34)
-    const forceClear = async () => {
+    // FUNCIÓN DE CLIC INTELIGENTE (Diferencia entre menús y enlaces)
+    const smartClick = async (text, waitNav = false) => {
+        console.log(`🖱️ Buscando: ${text}`);
+        
+        // Limpiar pop-ups del video (0:34) antes de cada clic
         await page.evaluate(() => {
-            // Cerramos modales y removemos fondos oscuros
-            const closeButtons = Array.from(document.querySelectorAll('button, a, .close')).filter(e => e.innerText.toLowerCase().includes('cerrar') || e.innerText === 'x');
-            closeButtons.forEach(b => b.click());
-            document.querySelectorAll('.modal-backdrop, .modal').forEach(m => m.remove());
+            document.querySelectorAll('.modal-backdrop, .modal, #myModal').forEach(m => m.remove());
             document.body.classList.remove('modal-open');
         }).catch(() => {});
-    };
 
-    // FUNCIÓN DE CLIC REFORZADA (Para el acordeón del video 0:38)
-    const forceClick = async (text) => {
-        console.log(`🖱️ Buscando: ${text}`);
-        await forceClear();
-        
-        const success = await page.evaluate((t) => {
+        const result = await page.evaluate((t) => {
+            // Buscamos todos los elementos que contengan el texto
             const elements = Array.from(document.querySelectorAll('a, li, h4, span, b'));
-            const target = elements.find(el => el.innerText.trim().includes(t));
+            
+            // Priorizamos elementos que sean visibles y tengan el texto exacto
+            const target = elements.find(el => 
+                el.innerText.trim() === t || el.innerText.trim().includes(t)
+            );
+
             if (target) {
                 target.scrollIntoView();
-                // Usamos una combinación de clic de Mouse y evento de JavaScript
+                // Simular clic real
                 const clickEvent = new MouseEvent('click', {view: window, bubbles: true, cancelable: true});
                 target.dispatchEvent(clickEvent);
                 return true;
@@ -62,34 +62,34 @@ app.post('/sii-navigate', async (req, res) => {
             return false;
         }, text);
 
-        if (!success) {
-            // Si falla el clic por texto, intentamos buscar si el elemento es un ID conocido del SII
-            throw new Error(`No se encontró el texto: ${text}`);
+        if (!result) throw new Error(`No se encontró el texto: ${text}`);
+        
+        if (waitNav) {
+            await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+        } else {
+            await new Promise(r => setTimeout(r, 3000)); // Espera para que el acordeón abra (Video 0:38)
         }
-        await new Promise(r => setTimeout(r, 2500)); // Espera humana para el despliegue
     };
 
-    // NAVEGACIÓN PASO A PASO SEGÚN EL VIDEO
-    await forceClick("Boletas de honorarios");
-    await forceClick("Emisor de boleta");
+    // --- RUTA EXACTA BASADA EN TU VIDEO ---
+    await smartClick("Boletas de honorarios");
+    await smartClick("Emisor de boleta");
     
-    // Aquí es donde fallaba: "Emitir boleta de honorarios"
-    console.log("👉 Intentando abrir submenú de emisión...");
-    await forceClick("Emitir boleta de honorarios");
-
-    console.log("👉 Intentando clic final en: Por usuario autorizado");
-    await Promise.all([
-        forceClick("Por usuario autorizado"),
-        page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {})
-    ]);
+    // En el video, haces clic en el que abre el sub-menú (0:39)
+    await smartClick("Emitir boleta de honorarios");
+    
+    // Ahora el clic final que cambia la página (0:41)
+    await smartClick("Por usuario autorizado", true);
 
     // 3. SELECCIÓN EN TABLA (Video 0:47)
-    console.log(`🎯 Buscando emisor numérico: ${rutemisor}`);
-    await new Promise(r => setTimeout(r, 4000));
+    console.log(`🎯 Buscando emisor: ${rutemisor}`);
+    await new Promise(r => setTimeout(r, 5000)); // Tiempo extra para carga de tabla
 
     const rutFound = await page.evaluate((target) => {
-        const targetClean = target.replace(/\D/g, '');
+        const targetClean = target.replace(/\D/g, ''); // 196705686
         const links = Array.from(document.querySelectorAll('table a'));
+        
+        // Buscamos el link cuyo texto numérico coincida
         const match = links.find(a => a.innerText.replace(/\D/g, '') === targetClean);
         if (match) {
             match.click();
@@ -98,17 +98,23 @@ app.post('/sii-navigate', async (req, res) => {
         return false;
     }, rutemisor);
 
-    if (!rutFound) throw new Error(`El RUT ${rutemisor} no aparece en la lista de la tabla.`);
+    if (!rutFound) {
+        // Si no lo encuentra, capturamos qué hay para el log
+        const bodyText = await page.evaluate(() => document.body.innerText.substring(0, 300));
+        throw new Error(`RUT no hallado en tabla. Texto visible: ${bodyText}`);
+    }
 
-    await page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {});
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
     
-    console.log("✅ Navegación exitosa.");
-    res.json({ success: true, finalUrl: page.url() });
+    console.log("✅ Llegamos a la página final.");
+    const currentUrl = page.url();
     await browser.close();
+    
+    res.json({ success: true, finalUrl: currentUrl });
 
   } catch (error) {
     if (browser) await browser.close();
-    console.error(`❌ Error detectado: ${error.message}`);
+    console.error(`❌ Error en Railway: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
 });
