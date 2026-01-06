@@ -14,10 +14,16 @@ app.post('/sii-navigate', async (req, res) => {
   try {
     browser = await puppeteer.launch({ 
       headless: "new",
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process']
+      args: [
+        '--no-sandbox', 
+        '--disable-setuid-sandbox', 
+        '--disable-dev-shm-usage', 
+        '--single-process'
+      ]
     });
     const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 1024 });
+    // Definimos un viewport amplio para asegurar que la tabla sea visible
+    await page.setViewport({ width: 1366, height: 1024 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
     // 1. LOGIN
@@ -36,6 +42,7 @@ app.post('/sii-navigate', async (req, res) => {
         page.waitForNavigation({ waitUntil: 'networkidle2' })
     ]);
 
+    // FUNCIÓN DE CLICK ROBUSTA (Busca en múltiples etiquetas)
     const clickByText = async (text, isOptional = false) => {
         console.log(`🖱️ Buscando: ${text}`);
         await new Promise(r => setTimeout(r, 2500)); 
@@ -58,7 +65,7 @@ app.post('/sii-navigate', async (req, res) => {
                 await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 12000 });
             } catch (e) {}
         } else if (!isOptional) {
-            throw new Error(`No se encontró el enlace con texto: ${text}`);
+            throw new Error(`No se encontró el elemento: ${text}`);
         }
     };
 
@@ -70,37 +77,57 @@ app.post('/sii-navigate', async (req, res) => {
     await clickByText("Emitir boleta de honorarios");
     await clickByText("Por usuario autorizado");
     
-    // 3. SELECCIÓN DE RUT EMISOR (Lógica de coincidencia parcial)
-    console.log(`🔎 Buscando coincidencia para el RUT: ${rutemisor}`);
+    // 3. SELECCIÓN DE RUT EMISOR (Optimizado con espera de tabla)
+    console.log(`🔎 Esperando que cargue la tabla de contribuyentes autorizados...`);
     
-    const rutSeleccionado = await page.evaluate((targetRut) => {
-        // Extraemos solo los números del RUT que buscamos
-        const targetNumbers = targetRut.replace(/\D/g, '');
-        
-        // Buscamos TODOS los enlaces en la página
-        const allLinks = Array.from(document.querySelectorAll('a'));
-        
-        // Buscamos el enlace cuyo texto, al quitarle todo lo que no sea número, coincida con el nuestro
-        const finalLink = allLinks.find(a => {
-            const linkNumbers = a.innerText.replace(/\D/g, '');
-            return linkNumbers === targetNumbers && linkNumbers.length > 0;
-        });
-
-        if (finalLink) {
-            finalLink.click();
-            return true;
-        }
-        return false;
-    }, rutemisor);
-
-    if (!rutSeleccionado) {
-        // Si falla, capturamos qué enlaces existen para diagnosticar
-        const linksOnPage = await page.evaluate(() => Array.from(document.querySelectorAll('a')).map(a => a.innerText));
-        console.log("🔗 Enlaces encontrados en esta página:", linksOnPage);
-        throw new Error(`El emisor RUT ${rutemisor} no fue encontrado. Revisar logs para ver enlaces disponibles.`);
+    // Forzamos la espera de que el texto de la tabla aparezca en pantalla
+    try {
+        await page.waitForFunction(
+            () => document.body.innerText.includes("seleccionar al contribuyente") || 
+                  document.querySelector('table') !== null,
+            { timeout: 20000 }
+        );
+    } catch (e) {
+        console.log("⚠️ Tiempo de espera agotado para la tabla, intentando buscar igual.");
     }
 
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+    console.log(`🎯 Buscando coincidencia numérica para el RUT: ${rutemisor}`);
+    
+    const result = await page.evaluate((targetRut) => {
+        // Normalizamos el RUT buscado (solo números)
+        const targetNumbers = targetRut.replace(/\D/g, '');
+        
+        // Priorizamos buscar dentro de tablas para evitar enlaces del menú lateral
+        const links = Array.from(document.querySelectorAll('table a, table td, .sand-p-base a'));
+        
+        const targetLink = links.find(el => {
+            const elNumbers = el.innerText.replace(/\D/g, '');
+            return elNumbers === targetNumbers && elNumbers.length > 0;
+        });
+
+        if (targetLink) {
+            targetLink.click();
+            return { success: true };
+        }
+        
+        // Si no lo encuentra, devolvemos lo que hay en la tabla para diagnosticar
+        const table = document.querySelector('table');
+        return { 
+            success: false, 
+            debug: table ? table.innerText : "TABLA NO DETECTADA EN DOM"
+        };
+    }, rutemisor);
+
+    if (!result.success) {
+        console.log("📊 Contenido detectado en la tabla:", result.debug);
+        throw new Error(`El RUT ${rutemisor} no se encontró. Contenido de tabla: ${result.debug}`);
+    }
+
+    // 4. ESPERA FINAL
+    console.log("⏳ Esperando transición final al formulario de emisión...");
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {
+        console.log("Aviso: La navegación final excedió el tiempo, pero procedemos.");
+    });
     
     const finalUrl = page.url();
     await browser.close();
@@ -110,7 +137,7 @@ app.post('/sii-navigate', async (req, res) => {
     
   } catch (error) {
     if (browser) await browser.close();
-    console.error("❌ Error:", error.message);
+    console.error("❌ Error en el proceso:", error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
