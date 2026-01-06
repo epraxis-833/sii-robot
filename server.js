@@ -17,7 +17,7 @@ app.post('/sii-navigate', async (req, res) => {
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process']
     });
     const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800 });
+    await page.setViewport({ width: 1280, height: 900 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
     // 1. LOGIN
@@ -36,13 +36,13 @@ app.post('/sii-navigate', async (req, res) => {
         page.waitForNavigation({ waitUntil: 'networkidle2' })
     ]);
 
-    // FUNCIÓN MEJORADA: Intenta hacer click, pero no muere si no encuentra el texto
+    // FUNCIÓN DE CLICK ROBUSTA
     const clickByText = async (text, isOptional = false) => {
         console.log(`🖱️ Buscando: ${text}`);
-        await new Promise(r => setTimeout(r, 2000)); // Espera pequeña para carga
+        await new Promise(r => setTimeout(r, 2000)); 
 
         const clicked = await page.evaluate((searchText) => {
-            const elements = Array.from(document.querySelectorAll('a, button, span, b'));
+            const elements = Array.from(document.querySelectorAll('a, button, span, b, td'));
             const target = elements.find(a => 
                 a.innerText.toLowerCase().includes(searchText.toLowerCase())
             );
@@ -54,21 +54,16 @@ app.post('/sii-navigate', async (req, res) => {
         }, text);
 
         if (clicked) {
-            console.log(`✅ Click en: ${text}`);
+            console.log(`✅ Click exitoso en: ${text}`);
             try {
-                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 5000 });
-            } catch (e) {
-                // Ignorar timeout de navegación si el click no cambió de página
-            }
-        } else {
-            if (!isOptional) {
-                throw new Error(`No se encontró el enlace con texto: ${text}`);
-            }
-            console.log(`⚠️ No se encontró "${text}", saltando...`);
+                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 8000 });
+            } catch (e) {}
+        } else if (!isOptional) {
+            throw new Error(`No se encontró el enlace con texto: ${text}`);
         }
     };
 
-    // 2. NAVEGACIÓN (Continuar es opcional ahora)
+    // 2. NAVEGACIÓN PASO A PASO
     await clickByText("Continuar", true); 
     await clickByText("Servicios online");
     await clickByText("Boletas de honorarios");
@@ -76,13 +71,36 @@ app.post('/sii-navigate', async (req, res) => {
     await clickByText("Emitir boleta de honorarios");
     await clickByText("Por usuario autorizado");
     
-    // 3. SELECCIONAR RUT EMISOR
-    await clickByText(rutemisor);
+    // 3. SELECCIÓN DE RUT EMISOR (Lógica de normalización)
+    console.log(`🔎 Buscando RUT Emisor (Normalizado): ${rutemisor}`);
+    
+    const rutClicked = await page.evaluate((targetRut) => {
+        // Quitamos puntos y pasamos a minúsculas (ej: 19.670.568-6 -> 19670568-6)
+        const cleanTarget = targetRut.replace(/\./g, '').toLowerCase();
+        
+        const elements = Array.from(document.querySelectorAll('a, button, td, span, b'));
+        const target = elements.find(el => {
+            const cleanElText = el.innerText.replace(/\./g, '').toLowerCase();
+            return cleanElText.includes(cleanTarget);
+        });
+
+        if (target) {
+            target.click();
+            return true;
+        }
+        return false;
+    }, rutemisor);
+
+    if (!rutClicked) {
+        throw new Error(`No se encontró el RUT emisor: ${rutemisor} en la lista de autorizados.`);
+    }
+
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 }).catch(() => {});
     
     const finalUrl = page.url();
     await browser.close();
     
-    console.log("✅ Proceso terminado con éxito.");
+    console.log("✅ Navegación terminada con éxito.");
     res.json({ success: true, finalUrl });
     
   } catch (error) {
