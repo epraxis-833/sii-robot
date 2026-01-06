@@ -28,97 +28,94 @@ app.post('/sii-navigate', async (req, res) => {
         page.waitForNavigation({ waitUntil: 'networkidle2' })
     ]);
 
-    // FUNCIÓN PARA CERRAR AVISOS (Segundo 0:34 del video)
+    // FUNCIÓN PARA ELIMINAR AVISOS BLOQUEADORES (Video 0:34)
     const clearModals = async () => {
         await page.evaluate(() => {
-            const buttons = Array.from(document.querySelectorAll('button, a, span, .close, .modal-footer button'));
-            const closeBtn = buttons.find(b => {
-                const t = b.innerText.toLowerCase();
-                return t.includes('cerrar') || t.includes('aceptar') || t === 'x';
+            const selectors = ['button.close', '.modal-footer button', '#myModal button'];
+            selectors.forEach(sel => {
+                const el = document.querySelector(sel);
+                if (el && el.innerText.toLowerCase().includes('cerrar')) el.click();
             });
-            if (closeBtn) closeBtn.click();
+            // Remover cualquier "backdrop" oscuro que bloquee el clic
+            const backdrops = document.querySelectorAll('.modal-backdrop');
+            backdrops.forEach(b => b.remove());
         }).catch(() => {});
-        await new Promise(r => setTimeout(r, 1000));
     };
 
-    // FUNCIÓN PARA CLIC EN MENÚS (Segundo 0:38 del video)
-    const clickMenu = async (text) => {
-        console.log(`🖱️ Intentando clic en: ${text}`);
-        await clearModals(); // Limpiar avisos antes de cada paso
-        
-        const success = await page.evaluate((t) => {
-            // Buscamos específicamente en elementos que el SII usa para sus menús
-            const elements = Array.from(document.querySelectorAll('a, li, span, b, h4'));
-            const target = elements.find(el => el.innerText.trim().includes(t));
-            if (target) {
-                target.scrollIntoView();
-                target.click();
+    // FUNCIÓN DE CLIC CON RE-INTENTO (Para el acordeón del video 0:38)
+    const smartClick = async (text, attempts = 5) => {
+        console.log(`🖱️ Intentando encontrar: ${text}`);
+        for (let i = 0; i < attempts; i++) {
+            await clearModals();
+            const success = await page.evaluate((t) => {
+                const elements = Array.from(document.querySelectorAll('a, li, span, h4, b'));
+                const target = elements.find(el => el.innerText.trim().includes(t));
+                if (target) {
+                    target.scrollIntoView();
+                    target.click();
+                    return true;
+                }
+                return false;
+            }, text);
+
+            if (success) {
+                console.log(`✅ Click exitoso en: ${text}`);
+                await new Promise(r => setTimeout(r, 1500)); // Espera para que despliegue
                 return true;
             }
-            return false;
-        }, text);
-
-        if (!success) throw new Error(`No se pudo encontrar o desplegar: ${text}`);
-        // Espera de 2 segundos para que el acordeón/despliegue termine (como se ve en el video)
-        await new Promise(r => setTimeout(r, 2000)); 
+            await new Promise(r => setTimeout(r, 1000)); // Esperar 1 seg antes de re-intentar
+        }
+        throw new Error(`Fallo tras varios intentos: ${text}`);
     };
 
-    // 2. NAVEGACIÓN PASO A PASO
+    // 2. NAVEGACIÓN DIRECTA (Siguiendo tu flujo de video)
     await page.goto('https://www.sii.cl/servicios_online/', { waitUntil: 'networkidle2' });
     
-    await clickMenu("Boletas de honorarios");
-    await clickMenu("Emisor de boleta");
-    await clickMenu("Emitir boleta de honorarios");
+    await smartClick("Boletas de honorarios");
+    await smartClick("Emisor de boleta");
+    await smartClick("Emitir boleta de honorarios");
     
-    // El paso final suele ser un enlace directo que sí cambia la URL
-    console.log("🖱️ Clic en: Por usuario autorizado");
-    await Promise.all([
-        page.evaluate(() => {
-            const el = Array.from(document.querySelectorAll('a')).find(a => a.innerText.includes("Por usuario autorizado"));
-            if (el) el.click();
-        }),
-        page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {})
-    ]);
-
-    // 3. SELECCIÓN EN TABLA (Segundo 0:47 del video)
-    console.log(`🎯 Buscando RUT emisor: ${rutemisor}`);
-    await new Promise(r => setTimeout(r, 4000));
-
-    const tableSelection = await page.evaluate((target) => {
-        const targetClean = target.replace(/\D/g, ''); // 196705686
-        const links = Array.from(document.querySelectorAll('table a'));
-        
-        const found = links.find(a => {
-            const linkClean = a.innerText.replace(/\D/g, '');
-            return linkClean === targetClean && linkClean.length > 0;
-        });
-
-        if (found) {
-            found.click();
-            return { success: true };
-        }
-        return { 
-            success: false, 
-            debug: `Tabla: ${!!document.querySelector('table')}. Texto: ${document.body.innerText.substring(0, 200)}` 
-        };
-    }, rutemisor);
-
-    if (!tableSelection.success) {
-        throw new Error(`Fallo en tabla: ${tableSelection.debug}`);
+    // El paso final suele requerir un clic y esperar carga de página
+    await smartClick("Por usuario autorizado");
+    try {
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 8000 });
+    } catch (e) {
+        console.log("Aviso: La navegación tardó más de lo esperado, continuando...");
     }
 
+    // 3. TABLA FINAL (Video 0:47)
+    console.log(`🎯 Buscando emisor: ${rutemisor}`);
+    await new Promise(r => setTimeout(r, 4000));
+
+    const clicked = await page.evaluate((target) => {
+        const targetClean = target.replace(/\D/g, ''); // Limpiar el RUT a 196705686
+        const links = Array.from(document.querySelectorAll('table a'));
+        const found = links.find(a => a.innerText.replace(/\D/g, '') === targetClean);
+        
+        if (found) {
+            found.click();
+            return true;
+        }
+        return false;
+    }, rutemisor);
+
+    if (!clicked) throw new Error(`El RUT ${rutemisor} no aparece en la tabla de autorizados.`);
+
     await page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {});
-    const finalUrl = page.url();
     
+    res.json({ 
+        success: true, 
+        finalUrl: page.url() 
+    });
+
     await browser.close();
-    res.json({ success: true, finalUrl });
 
   } catch (error) {
     if (browser) await browser.close();
-    console.error(`❌ Error en robot: ${error.message}`);
+    console.error(`❌ ERROR: ${error.message}`);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Robot listo en puerto ${PORT}`));
+app.listen(PORT, '0.0.0.0');
