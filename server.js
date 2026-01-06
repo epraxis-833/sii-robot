@@ -14,16 +14,13 @@ app.post('/sii-navigate', async (req, res) => {
   try {
     browser = await puppeteer.launch({ 
       headless: "new",
-      args: [
-        '--no-sandbox', 
-        '--disable-setuid-sandbox', 
-        '--disable-dev-shm-usage', 
-        '--single-process'
-      ]
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process']
     });
     const page = await browser.newPage();
     await page.setViewport({ width: 1366, height: 1024 });
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    
+    // User Agent más realista para evitar bloqueos
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
     
     // 1. LOGIN
     await page.goto('https://zeusr.sii.cl/AUT2000/InicioAutenticacion/IngresoRutClave.html', { 
@@ -32,8 +29,8 @@ app.post('/sii-navigate', async (req, res) => {
     });
     
     await page.waitForSelector('input[name*="rutcntr"]', { visible: true });
-    await page.type('input[name*="rutcntr"]', rutautorizado);
-    await page.type('input[type="password"]', password);
+    await page.type('input[name*="rutcntr"]', rutautorizado, { delay: 50 });
+    await page.type('input[type="password"]', password, { delay: 50 });
     
     const loginButton = 'button[type="submit"], input[type="submit"], #bt_ingresar';
     await Promise.all([
@@ -41,10 +38,9 @@ app.post('/sii-navigate', async (req, res) => {
         page.waitForNavigation({ waitUntil: 'networkidle2' })
     ]);
 
-    // FUNCIÓN DE CLICK ROBUSTA
     const clickByText = async (text, isOptional = false) => {
         console.log(`🖱️ Buscando: ${text}`);
-        await new Promise(r => setTimeout(r, 2500)); 
+        await new Promise(r => setTimeout(r, 3000)); 
 
         const clicked = await page.evaluate((searchText) => {
             const elements = Array.from(document.querySelectorAll('a, button, span, b, td'));
@@ -61,14 +57,14 @@ app.post('/sii-navigate', async (req, res) => {
         if (clicked) {
             console.log(`✅ Click exitoso en: ${text}`);
             try {
-                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 12000 });
+                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 });
             } catch (e) {}
         } else if (!isOptional) {
             throw new Error(`No se encontró el elemento: ${text}`);
         }
     };
 
-    // 2. NAVEGACIÓN PASO A PASO
+    // 2. NAVEGACIÓN
     await clickByText("Continuar", true); 
     await clickByText("Servicios online");
     await clickByText("Boletas de honorarios");
@@ -76,65 +72,54 @@ app.post('/sii-navigate', async (req, res) => {
     await clickByText("Emitir boleta de honorarios");
     await clickByText("Por usuario autorizado");
     
-    // 3. SELECCIÓN DE RUT EMISOR (Protección contra avisos y carga lenta)
-    console.log(`🔎 Limpiando avisos y detectando tabla para: ${rutemisor}`);
+    // 3. SELECCIÓN DE RUT EMISOR (Búsqueda con formato exacto de tu tabla)
+    console.log(`🎯 Buscando el RUT con formato exacto: ${rutemisor}`);
 
-    // Intentar cerrar pop-ups si existen
-    await page.evaluate(() => {
-        const ads = Array.from(document.querySelectorAll('button, a, span'))
-            .filter(el => {
-                const txt = el.innerText.toLowerCase();
-                return txt === 'cerrar' || txt === 'x' || txt.includes('entendido');
-            });
-        ads.forEach(btn => btn.click());
-    }).catch(() => {});
+    await new Promise(r => setTimeout(r, 5000)); // Espera extra para carga de tabla
 
-    await new Promise(r => setTimeout(r, 3000));
+    const selectionResult = await page.evaluate((targetRut) => {
+        // Formateamos el RUT para que tenga guion (ej: 196705686 -> 19670568-6)
+        const clean = targetRut.replace(/[^0-9kK]/g, '');
+        const body = clean.slice(0, -1);
+        const dv = clean.slice(-1);
+        const formattedRut = `${body}-${dv}`; // Esto genera el 19670568-6
 
-    const finalResult = await page.evaluate((targetRut) => {
-        const targetNumbers = targetRut.replace(/\D/g, '');
+        // Buscamos todos los enlaces en tablas
+        const links = Array.from(document.querySelectorAll('table a, a'));
         
-        // Buscamos en toda la página pero priorizamos elementos que parezcan RUTs
-        const elements = Array.from(document.querySelectorAll('a, td, span, b'));
-        
-        const found = elements.find(el => {
-            const elNumbers = el.innerText.replace(/\D/g, '');
-            return elNumbers === targetNumbers && elNumbers.length > 0;
+        // Intentamos tres tipos de coincidencia:
+        // 1. Con el formato de guion (19670568-6)
+        // 2. Con puntos y guion (19.670.568-6)
+        // 3. Solo los números
+        const targetLink = links.find(a => {
+            const text = a.innerText.trim();
+            const textClean = text.replace(/\D/g, '');
+            const targetClean = targetRut.replace(/\D/g, '');
+            return text.includes(formattedRut) || textClean === targetClean;
         });
 
-        if (found) {
-            // Si el elemento encontrado no es el link, buscamos el <a> más cercano hacia arriba
-            const clickable = found.tagName === 'A' ? found : found.closest('a');
-            if (clickable) {
-                clickable.click();
-                return { success: true };
-            }
-            // Si no hay link, click directo al elemento (por si tiene evento JS)
-            found.click();
+        if (targetLink) {
+            targetLink.click();
             return { success: true };
         }
         
-        // Reporte de diagnóstico si falla
-        const hasTable = document.querySelector('table') !== null;
-        const pageTextSnippet = document.body.innerText.substring(0, 500).replace(/\n/g, ' ');
         return { 
             success: false, 
-            debug: `Tabla: ${hasTable}. Texto inicial: ${pageTextSnippet}` 
+            debug: `Tabla detectada: ${document.querySelector('table') !== null}. Texto visible: ${document.body.innerText.substring(0, 200)}` 
         };
     }, rutemisor);
 
-    if (!finalResult.success) {
-        throw new Error(`RUT no encontrado. Estado: ${finalResult.debug}`);
+    if (!selectionResult.success) {
+        throw new Error(`RUT no encontrado. Estado: ${selectionResult.debug}`);
     }
 
-    // 4. ESPERA FINAL DE TRANSICIÓN
-    console.log("⏳ Navegando a la página de emisión...");
+    // 4. FINALIZACIÓN
     await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
     
     const finalUrl = page.url();
     await browser.close();
     
-    console.log("✅ Proceso completado exitosamente.");
+    console.log("✅ Navegación terminada.");
     res.json({ success: true, finalUrl });
     
   } catch (error) {
