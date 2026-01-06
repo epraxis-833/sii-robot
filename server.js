@@ -22,7 +22,6 @@ app.post('/sii-navigate', async (req, res) => {
       ]
     });
     const page = await browser.newPage();
-    // Definimos un viewport amplio para asegurar que la tabla sea visible
     await page.setViewport({ width: 1366, height: 1024 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
@@ -42,7 +41,7 @@ app.post('/sii-navigate', async (req, res) => {
         page.waitForNavigation({ waitUntil: 'networkidle2' })
     ]);
 
-    // FUNCIÓN DE CLICK ROBUSTA (Busca en múltiples etiquetas)
+    // FUNCIÓN DE CLICK ROBUSTA
     const clickByText = async (text, isOptional = false) => {
         console.log(`🖱️ Buscando: ${text}`);
         await new Promise(r => setTimeout(r, 2500)); 
@@ -77,57 +76,60 @@ app.post('/sii-navigate', async (req, res) => {
     await clickByText("Emitir boleta de honorarios");
     await clickByText("Por usuario autorizado");
     
-    // 3. SELECCIÓN DE RUT EMISOR (Optimizado con espera de tabla)
-    console.log(`🔎 Esperando que cargue la tabla de contribuyentes autorizados...`);
-    
-    // Forzamos la espera de que el texto de la tabla aparezca en pantalla
-    try {
-        await page.waitForFunction(
-            () => document.body.innerText.includes("seleccionar al contribuyente") || 
-                  document.querySelector('table') !== null,
-            { timeout: 20000 }
-        );
-    } catch (e) {
-        console.log("⚠️ Tiempo de espera agotado para la tabla, intentando buscar igual.");
-    }
+    // 3. SELECCIÓN DE RUT EMISOR (Protección contra avisos y carga lenta)
+    console.log(`🔎 Limpiando avisos y detectando tabla para: ${rutemisor}`);
 
-    console.log(`🎯 Buscando coincidencia numérica para el RUT: ${rutemisor}`);
-    
-    const result = await page.evaluate((targetRut) => {
-        // Normalizamos el RUT buscado (solo números)
+    // Intentar cerrar pop-ups si existen
+    await page.evaluate(() => {
+        const ads = Array.from(document.querySelectorAll('button, a, span'))
+            .filter(el => {
+                const txt = el.innerText.toLowerCase();
+                return txt === 'cerrar' || txt === 'x' || txt.includes('entendido');
+            });
+        ads.forEach(btn => btn.click());
+    }).catch(() => {});
+
+    await new Promise(r => setTimeout(r, 3000));
+
+    const finalResult = await page.evaluate((targetRut) => {
         const targetNumbers = targetRut.replace(/\D/g, '');
         
-        // Priorizamos buscar dentro de tablas para evitar enlaces del menú lateral
-        const links = Array.from(document.querySelectorAll('table a, table td, .sand-p-base a'));
+        // Buscamos en toda la página pero priorizamos elementos que parezcan RUTs
+        const elements = Array.from(document.querySelectorAll('a, td, span, b'));
         
-        const targetLink = links.find(el => {
+        const found = elements.find(el => {
             const elNumbers = el.innerText.replace(/\D/g, '');
             return elNumbers === targetNumbers && elNumbers.length > 0;
         });
 
-        if (targetLink) {
-            targetLink.click();
+        if (found) {
+            // Si el elemento encontrado no es el link, buscamos el <a> más cercano hacia arriba
+            const clickable = found.tagName === 'A' ? found : found.closest('a');
+            if (clickable) {
+                clickable.click();
+                return { success: true };
+            }
+            // Si no hay link, click directo al elemento (por si tiene evento JS)
+            found.click();
             return { success: true };
         }
         
-        // Si no lo encuentra, devolvemos lo que hay en la tabla para diagnosticar
-        const table = document.querySelector('table');
+        // Reporte de diagnóstico si falla
+        const hasTable = document.querySelector('table') !== null;
+        const pageTextSnippet = document.body.innerText.substring(0, 500).replace(/\n/g, ' ');
         return { 
             success: false, 
-            debug: table ? table.innerText : "TABLA NO DETECTADA EN DOM"
+            debug: `Tabla: ${hasTable}. Texto inicial: ${pageTextSnippet}` 
         };
     }, rutemisor);
 
-    if (!result.success) {
-        console.log("📊 Contenido detectado en la tabla:", result.debug);
-        throw new Error(`El RUT ${rutemisor} no se encontró. Contenido de tabla: ${result.debug}`);
+    if (!finalResult.success) {
+        throw new Error(`RUT no encontrado. Estado: ${finalResult.debug}`);
     }
 
-    // 4. ESPERA FINAL
-    console.log("⏳ Esperando transición final al formulario de emisión...");
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {
-        console.log("Aviso: La navegación final excedió el tiempo, pero procedemos.");
-    });
+    // 4. ESPERA FINAL DE TRANSICIÓN
+    console.log("⏳ Navegando a la página de emisión...");
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
     
     const finalUrl = page.url();
     await browser.close();
@@ -137,7 +139,7 @@ app.post('/sii-navigate', async (req, res) => {
     
   } catch (error) {
     if (browser) await browser.close();
-    console.error("❌ Error en el proceso:", error.message);
+    console.error("❌ Error:", error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
