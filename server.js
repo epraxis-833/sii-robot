@@ -14,10 +14,10 @@ app.post('/sii-navigate', async (req, res) => {
     let browser;
     
     try {
-        console.log(`🚀 Iniciando bypass avanzado para: ${rutemisor}`);
+        console.log(`🚀 Iniciando con corrección de formato para: ${rutemisor}`);
         browser = await puppeteer.launch({ 
             headless: "new",
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
         
         const page = await browser.newPage();
@@ -29,59 +29,51 @@ app.post('/sii-navigate', async (req, res) => {
         await page.type('input[type="password"]', password, { delay: 100 });
         await Promise.all([page.click('#bt_ingresar'), page.waitForNavigation({ waitUntil: 'networkidle0' })]);
 
-        console.log("✅ Sesión iniciada. Navegando al menú...");
+        // 2. SALTO DIRECTO A LA TABLA DE EMISORES (Para evitar ser expulsado en los menús)
+        console.log("🔗 Saltando directamente a la tabla de emisores autorizados...");
+        await page.goto('https://loa.sii.cl/cgi_IMT/TMBEUS_ValidaAutorizacion.cgi?dummy=1461943151412', { 
+            waitUntil: 'networkidle0' 
+        });
+
+        // 3. BÚSQUEDA INTELIGENTE DEL RUT (Prueba ambos formatos)
+        console.log(`🎯 Buscando emisor: ${rutemisor}`);
+        
+        // Esperamos un poco a que cargue el contenido dinámico
         await new Promise(r => setTimeout(r, 5000));
 
-        // 2. NAVEGACIÓN PASO A PASO (Basado en lo que ya funcionó en tu log)
-        const pasos = [
-            'Servicios online',
-            'Boletas de honorarios electrónicas',
-            'Emisor de boleta de honorarios',
-            'Emitir boleta de honorarios electrónica',
-            'Por usuario autorizado con datos usados anteriormente'
-        ];
-
-        for (const paso of pasos) {
-            await page.evaluate((t) => {
-                const el = Array.from(document.querySelectorAll('a, h4, span')).find(e => e.innerText.includes(t));
-                if (el) el.click();
-            }, paso);
-            await new Promise(r => setTimeout(r, 3000));
-        }
-
-        // 3. BUSQUEDA AGRESIVA DEL RUT (EL PUNTO DE FALLA)
-        console.log(`🎯 Buscando emisor: ${rutemisor}`);
-        const rutLimpio = rutemisor.replace(/\D/g, ''); // Ejemplo: 196705686
-
-        // Esperamos a que cualquier tabla aparezca en la página
-        await page.waitForSelector('table', { timeout: 10000 }).catch(() => console.log("⏳ La tabla tarda en cargar..."));
-
-        const rutEncontrado = await page.evaluate((target) => {
-            // Buscamos todos los enlaces que contengan números
+        const rutSeleccionado = await page.evaluate((target) => {
             const links = Array.from(document.querySelectorAll('a'));
-            const match = links.find(a => {
-                const textoLink = a.innerText.replace(/\D/g, '');
-                return textoLink === target || textoLink.includes(target);
-            });
+            
+            // Función para limpiar RUTs (quitar puntos y guiones)
+            const limpiar = (r) => r.replace(/[^0-9kK]/g, '').toLowerCase();
+            const targetLimpio = limpiar(target);
+
+            // Buscamos el link que coincida con el RUT limpio
+            const match = links.find(a => limpiar(a.innerText) === targetLimpio);
 
             if (match) {
                 match.click();
-                return true;
+                return { success: true, text: match.innerText };
             }
-            return false;
-        }, rutLimpio);
+            return { success: false, visto: links.map(l => l.innerText).filter(t => t.length > 5).slice(0, 5) };
+        }, rutemisor);
 
-        if (!rutEncontrado) {
-            // Si no se encontró, tomamos una captura para saber qué está viendo el robot (útil para debug)
-            const debugText = await page.evaluate(() => document.body.innerText.substring(0, 500));
-            throw new Error(`RUT no hallado. Texto inicial de página: ${debugText}`);
+        if (!rutSeleccionado.success) {
+            const screenText = await page.evaluate(() => document.body.innerText.substring(0, 300));
+            throw new Error(`RUT no hallado en tabla. Texto en pantalla: ${screenText.replace(/\n/g, ' ')}`);
         }
 
-        // 4. FINALIZACIÓN
-        await new Promise(r => setTimeout(r, 5000));
-        console.log(`✅ ¡ÉXITO! URL actual: ${page.url()}`);
+        console.log(`✅ RUT seleccionado correctamente: ${rutSeleccionado.text}`);
         
-        res.json({ success: true, url: page.url() });
+        // 4. ESPERA FINAL PARA CONFIRMAR ENTRADA AL FORMULARIO
+        await new Promise(r => setTimeout(r, 6000));
+        
+        res.json({ 
+            success: true, 
+            msg: "Llegamos al formulario de emisión",
+            url: page.url() 
+        });
+
         await browser.close();
 
     } catch (error) {
