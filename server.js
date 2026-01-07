@@ -15,51 +15,24 @@ app.post('/sii-navigate', async (req, res) => {
     
     try {
         console.log(`🚀 Iniciando bypass avanzado para: ${rutemisor}`);
-        
         browser = await puppeteer.launch({ 
             headless: "new",
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-blink-features=AutomationControlled',
-                '--use-gl=desktop', // Simula una tarjeta gráfica real
-                '--disable-web-security',
-                '--lang=es-CL,es' // Fuerza idioma local
-            ]
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
         });
         
         const page = await browser.newPage();
-        
-        // --- EMULACIÓN DE HARDWARE REAL ---
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-        
-        // 1. LOGIN CON ESPERA DE RED "IDLE0"
-        await page.goto('https://zeusr.sii.cl/AUT2000/InicioAutenticacion/IngresoRutClave.html', { 
-            waitUntil: 'networkidle0' 
-        });
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
-        await page.type('input[name*="rutcntr"]', rutautorizado, { delay: 180 });
-        await page.type('input[type="password"]', password, { delay: 200 });
-        
-        // Clic y espera larga para que el servidor del SII registre la sesión
-        await Promise.all([
-            page.click('#bt_ingresar'),
-            page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 60000 })
-        ]);
+        // 1. LOGIN
+        await page.goto('https://zeusr.sii.cl/AUT2000/InicioAutenticacion/IngresoRutClave.html', { waitUntil: 'networkidle0' });
+        await page.type('input[name*="rutcntr"]', rutautorizado, { delay: 100 });
+        await page.type('input[type="password"]', password, { delay: 100 });
+        await Promise.all([page.click('#bt_ingresar'), page.waitForNavigation({ waitUntil: 'networkidle0' })]);
 
-        console.log("✅ Sesión iniciada. Esperando 8 segundos para burlar el rastreador...");
-        await new Promise(r => setTimeout(r, 8000));
+        console.log("✅ Sesión iniciada. Navegando al menú...");
+        await new Promise(r => setTimeout(r, 5000));
 
-        // --- 2. TRUCO DE RE-DIRECCIÓN (Si nos bota, reintentamos una vez) ---
-        const checkSession = async () => {
-            const isOut = await page.evaluate(() => document.body.innerText.includes("Ingresar a Mi Sii"));
-            if (isOut) {
-                console.log("⚠️ Detectado re-login, intentando refrescar sesión...");
-                await page.reload({ waitUntil: 'networkidle0' });
-            }
-        };
-
-        // --- 3. NAVEGACIÓN PASO A PASO ---
+        // 2. NAVEGACIÓN PASO A PASO (Basado en lo que ya funcionó en tu log)
         const pasos = [
             'Servicios online',
             'Boletas de honorarios electrónicas',
@@ -69,42 +42,46 @@ app.post('/sii-navigate', async (req, res) => {
         ];
 
         for (const paso of pasos) {
-            await checkSession();
-            console.log(`🖱️ Clic en: ${paso}`);
-            
-            const clickOk = await page.evaluate((txt) => {
-                const els = Array.from(document.querySelectorAll('a, h4, span, li'));
-                const target = els.find(e => e.innerText.trim().includes(txt));
-                if (target) { target.click(); return true; }
-                return false;
+            await page.evaluate((t) => {
+                const el = Array.from(document.querySelectorAll('a, h4, span')).find(e => e.innerText.includes(t));
+                if (el) el.click();
             }, paso);
-
-            if (!clickOk) {
-                // Si falla el clic, intentamos forzar la URL del menú si es posible
-                console.log(`⚠️ No se pudo clickear ${paso}, continuando...`);
-            }
-            await new Promise(r => setTimeout(r, 4000));
+            await new Promise(r => setTimeout(r, 3000));
         }
 
-        // --- 4. SELECCIÓN EN TABLA (MODO IFRAME) ---
+        // 3. BUSQUEDA AGRESIVA DEL RUT (EL PUNTO DE FALLA)
         console.log(`🎯 Buscando emisor: ${rutemisor}`);
-        const rutLimpio = rutemisor.replace(/\D/g, '');
-        
-        // Esperamos a que la tabla cargue realmente
-        await page.waitForNetworkIdle({ timeout: 10000 }).catch(() => {});
+        const rutLimpio = rutemisor.replace(/\D/g, ''); // Ejemplo: 196705686
 
-        const finalSuccess = await page.evaluate((target) => {
+        // Esperamos a que cualquier tabla aparezca en la página
+        await page.waitForSelector('table', { timeout: 10000 }).catch(() => console.log("⏳ La tabla tarda en cargar..."));
+
+        const rutEncontrado = await page.evaluate((target) => {
+            // Buscamos todos los enlaces que contengan números
             const links = Array.from(document.querySelectorAll('a'));
-            const match = links.find(a => a.innerText.replace(/\D/g, '') === target);
-            if (match) { match.click(); return true; }
+            const match = links.find(a => {
+                const textoLink = a.innerText.replace(/\D/g, '');
+                return textoLink === target || textoLink.includes(target);
+            });
+
+            if (match) {
+                match.click();
+                return true;
+            }
             return false;
         }, rutLimpio);
 
-        if (!finalSuccess) throw new Error("RUT no hallado en la tabla final.");
+        if (!rutEncontrado) {
+            // Si no se encontró, tomamos una captura para saber qué está viendo el robot (útil para debug)
+            const debugText = await page.evaluate(() => document.body.innerText.substring(0, 500));
+            throw new Error(`RUT no hallado. Texto inicial de página: ${debugText}`);
+        }
 
-        await new Promise(r => setTimeout(r, 4000));
-        res.json({ success: true, finalUrl: page.url() });
-
+        // 4. FINALIZACIÓN
+        await new Promise(r => setTimeout(r, 5000));
+        console.log(`✅ ¡ÉXITO! URL actual: ${page.url()}`);
+        
+        res.json({ success: true, url: page.url() });
         await browser.close();
 
     } catch (error) {
