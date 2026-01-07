@@ -13,37 +13,54 @@ app.post('/sii-navigate', async (req, res) => {
     const { rutautorizado, password, rutemisor } = req.body;
     let browser;
     
-    // El RUT que buscamos en la tabla según tu imagen image_8720ed.png
-    const rutBuscado = rutemisor.includes('-') ? rutemisor : `${rutemisor.slice(0, -1)}-${rutemisor.slice(-1)}`;
-    
+    // Formato exacto para la tabla: 19670568-6
+    const rutParaTabla = rutemisor.includes('-') ? rutemisor : `${rutemisor.slice(0, -1)}-${rutemisor.slice(-1)}`;
+
     try {
-        console.log(`🚀 Iniciando bypass de alta persistencia para: ${rutBuscado}`);
+        console.log(`🚀 Iniciando bypass geolocalizado para: ${rutParaTabla}`);
+        
         browser = await puppeteer.launch({ 
             headless: "new",
             args: [
-                '--no-sandbox', 
+                '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-blink-features=AutomationControlled',
-                '--window-size=1366,768'
+                '--lang=es-CL,es',
+                '--window-size=1920,1080'
             ]
         });
-        
+
         const page = await browser.newPage();
-        // Definir un timeout global más largo para Railway
-        page.setDefaultNavigationTimeout(60000); 
+        
+        // --- TRUCO 1: EMULACIÓN DE GEOLOCALIZACIÓN (Santiago, Chile) ---
+        const context = browser.defaultBrowserContext();
+        await context.overridePermissions('https://zeusr.sii.cl', ['geolocation']);
+        await context.overridePermissions('https://loa.sii.cl', ['geolocation']);
+        await page.setGeolocation({ latitude: -33.4489, longitude: -70.6693 });
+
+        // --- TRUCO 2: TIMEOUTS EXTENDIDOS ---
+        // Aumentamos a 90 segundos porque Railway y el SII a veces son lentos
+        page.setDefaultNavigationTimeout(90000);
+        page.setDefaultTimeout(90000);
+
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
         // 1. LOGIN
+        console.log("🔑 Accediendo al SII...");
         await page.goto('https://zeusr.sii.cl/AUT2000/InicioAutenticacion/IngresoRutClave.html', { waitUntil: 'networkidle2' });
-        await page.type('input[name*="rutcntr"]', rutautorizado, { delay: 150 });
+        
+        await page.type('input[name*="rutcntr"]', rutautorizado, { delay: 120 });
         await page.type('input[type="password"]', password, { delay: 150 });
+        
         await Promise.all([
             page.click('#bt_ingresar'),
             page.waitForNavigation({ waitUntil: 'networkidle0' })
         ]);
 
-        console.log("✅ Sesión activa. Iniciando simulación humana...");
+        console.log("✅ Sesión iniciada. Esperando 5s para estabilizar...");
+        await new Promise(r => setTimeout(r, 5000));
 
-        // 2. NAVEGACIÓN PASO A PASO CON MOVIMIENTO
+        // 2. NAVEGACIÓN PASO A PASO (MÉTODO ORGÁNICO)
         const pasos = [
             'Servicios online',
             'Boletas de honorarios electrónicas',
@@ -53,74 +70,72 @@ app.post('/sii-navigate', async (req, res) => {
         ];
 
         for (const paso of pasos) {
-            // Verificación de expulsión
-            const isLoggedOut = await page.evaluate(() => document.body.innerText.includes("Ingresar a Mi Sii"));
-            if (isLoggedOut) throw new Error("SII cerró sesión preventivamente.");
+            // Verificar si nos botaron
+            const contenido = await page.content();
+            if (contenido.includes("Ingresar a Mi Sii")) {
+                throw new Error(`El SII cerró la sesión en el paso: ${paso}`);
+            }
 
-            console.log(`🖱️ Intentando entrar a: ${paso}`);
+            console.log(`🖱️ Buscando y clickeando: ${paso}`);
             
-            // Simular un scroll antes de hacer clic
-            await page.evaluate(() => window.scrollBy(0, Math.floor(Math.random() * 200)));
-            
-            await page.evaluate((txt) => {
-                const elements = Array.from(document.querySelectorAll('a, h4, span, li'));
-                const target = elements.find(el => el.innerText.trim().includes(txt));
-                if (target) {
-                    target.scrollIntoView();
-                    target.click();
+            // Scroll humano aleatorio
+            await page.evaluate(() => window.scrollBy(0, Math.floor(Math.random() * 150)));
+
+            const clickResult = await page.evaluate((t) => {
+                const el = Array.from(document.querySelectorAll('a, h4, span, li'))
+                                .find(e => e.innerText.trim().includes(t));
+                if (el) {
+                    el.scrollIntoView();
+                    el.click();
+                    return true;
                 }
+                return false;
             }, paso);
 
-            await new Promise(r => setTimeout(r, 5000)); // Pausa orgánica
+            if (!clickResult) console.log(`⚠️ No se pudo clickear "${paso}", intentando esperar...`);
+            await new Promise(r => setTimeout(r, 4500));
         }
 
-        // 3. BUSQUEDA FINAL EN TABLA (Basado en image_8720ed.png)
-        console.log(`🎯 Buscando RUT ${rutBuscado} en la tabla final...`);
+        // 3. SELECCIÓN FINAL EN TABLA
+        console.log(`🎯 Buscando el RUT ${rutParaTabla} en la tabla de emisores...`);
         
-        // Esperamos a que la tabla exista realmente en el DOM
-        await page.waitForSelector('table', { timeout: 20000 });
+        // Esperamos a que la tabla cargue
+        await page.waitForSelector('table', { timeout: 30000 }).catch(() => console.log("La tabla tarda..."));
 
-        const encontrado = await page.evaluate((targetRut) => {
-            const links = Array.from(document.querySelectorAll('a'));
-            // Buscamos un link que tenga el RUT con guion
-            const match = links.find(a => a.innerText.includes(targetRut));
+        const seleccionado = await page.evaluate((target) => {
+            const links = Array.from(document.querySelectorAll('table a, a'));
+            // Buscamos coincidencia exacta con el RUT formateado
+            const match = links.find(a => a.innerText.trim() === target);
             if (match) {
-                match.scrollIntoView();
                 match.click();
                 return true;
             }
             return false;
-        }, rutBuscado);
+        }, rutParaTabla);
 
-        if (!encontrado) {
-            // Si no lo halla, intentamos por "limpieza de RUT" como plan B
-            const planB = await page.evaluate((targetLimpio) => {
-                const links = Array.from(document.querySelectorAll('a'));
-                const match = links.find(a => a.innerText.replace(/\D/g, '') === targetLimpio.replace(/\D/g, ''));
-                if (match) { match.click(); return true; }
-                return false;
-            }, rutBuscado);
-            
-            if (!planB) throw new Error(`RUT ${rutBuscado} no visible en la tabla de autorizados.`);
+        if (!seleccionado) {
+            throw new Error(`RUT ${rutParaTabla} no hallado. El SII podría haber bloqueado la carga de la tabla.`);
         }
 
-        console.log("✅ ¡Hicimos clic en el emisor! Esperando carga de formulario...");
-        await new Promise(r => setTimeout(r, 7000));
+        console.log("✅ ¡Acceso concedido! Entrando al formulario final...");
+        await new Promise(r => setTimeout(r, 8000));
 
         res.json({ 
             success: true, 
-            status: "En formulario de emisión",
-            currentUrl: page.url() 
+            finalUrl: page.url(),
+            message: "Robot llegó a la página de emisión" 
         });
 
         await browser.close();
 
     } catch (error) {
         if (browser) await browser.close();
-        console.error(`❌ ERROR: ${error.message}`);
+        console.error(`❌ ERROR CRÍTICO: ${error.message}`);
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0');
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🤖 Servidor ultra-sigilo escuchando en puerto ${PORT}`);
+});
