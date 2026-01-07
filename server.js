@@ -13,34 +13,34 @@ app.post('/sii-navigate', async (req, res) => {
     const { rutautorizado, password, rutemisor } = req.body;
     let browser;
     
+    // Formateamos el RUT para que coincida con la tabla del SII (19670568-6)
+    const rutParaTabla = rutemisor.includes('-') ? rutemisor : `${rutemisor.slice(0, -1)}-${rutemisor.slice(-1)}`;
+    
     try {
-        console.log(`🚀 Iniciando proceso para Emisor: ${rutemisor}`);
+        console.log(`🚀 Iniciando proceso para Emisor: ${rutParaTabla}`);
         browser = await puppeteer.launch({ 
             headless: "new",
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--lang=es-CL,es']
         });
         
         const page = await browser.newPage();
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+        await page.setExtraHTTPHeaders({ 'Accept-Language': 'es-CL,es;q=0.9' });
 
-        // --- FUNCIÓN PARA VERIFICAR SI LA SESIÓN SIGUE VIVA ---
-        const checkSession = async (paso) => {
-            const text = await page.evaluate(() => document.body.innerText);
-            if (text.includes("Ingresar a Mi Sii") || text.includes("Clave Tributaria")) {
-                throw new Error(`SESIÓN CERRADA por el SII en el paso: [${paso}]`);
-            }
+        // --- FUNCIÓN DE LOGIN REUTILIZABLE ---
+        const realizarLogin = async () => {
+            console.log("🔑 Intentando autenticación...");
+            await page.goto('https://zeusr.sii.cl/AUT2000/InicioAutenticacion/IngresoRutClave.html', { waitUntil: 'networkidle0' });
+            await page.type('input[name*="rutcntr"]', rutautorizado, { delay: 100 });
+            await page.type('input[type="password"]', password, { delay: 100 });
+            await Promise.all([
+                page.click('#bt_ingresar'),
+                page.waitForNavigation({ waitUntil: 'networkidle0' })
+            ]);
         };
 
-        // 1. LOGIN
-        await page.goto('https://zeusr.sii.cl/AUT2000/InicioAutenticacion/IngresoRutClave.html', { waitUntil: 'networkidle0' });
-        await page.type('input[name*="rutcntr"]', rutautorizado, { delay: 100 });
-        await page.type('input[type="password"]', password, { delay: 100 });
-        await Promise.all([page.click('#bt_ingresar'), page.waitForNavigation({ waitUntil: 'networkidle0' })]);
-        
-        console.log("✅ Sesión iniciada.");
-        await new Promise(r => setTimeout(r, 4000));
+        await realizarLogin();
 
-        // 2. NAVEGACIÓN MANUAL (Para evitar el Error 404 del salto directo)
+        // --- NAVEGACIÓN CON RE-INTENTO SI SE PIERDE LA SESIÓN ---
         const pasos = [
             'Servicios online',
             'Boletas de honorarios electrónicas',
@@ -50,52 +50,50 @@ app.post('/sii-navigate', async (req, res) => {
         ];
 
         for (const paso of pasos) {
-            await checkSession(paso); // Verificar antes de cada clic
-            console.log(`🖱️ Haciendo clic en: ${paso}`);
+            console.log(`🖱️ Buscando: ${paso}`);
             
-            const clickOk = await page.evaluate((t) => {
+            // Si detectamos que nos sacó al login, re-identificamos
+            const estaAfuera = await page.evaluate(() => document.body.innerText.includes("Ingresar a Mi Sii"));
+            if (estaAfuera) {
+                console.log("⚠️ Sesión perdida detectada. Re-intentando login único...");
+                await realizarLogin();
+                await new Promise(r => setTimeout(r, 3000));
+            }
+
+            const clickExitoso = await page.evaluate((t) => {
                 const el = Array.from(document.querySelectorAll('a, h4, span, li'))
                                 .find(e => e.innerText.trim().includes(t));
                 if (el) { el.click(); return true; }
                 return false;
             }, paso);
 
-            if (!clickOk) console.log(`⚠️ Advertencia: No se encontró "${paso}", intentando seguir...`);
-            await new Promise(r => setTimeout(r, 3500));
+            if (!clickExitoso) {
+                console.log(`❌ No se encontró el enlace: ${paso}`);
+            }
+            await new Promise(r => setTimeout(r, 4000));
         }
 
-        // 3. BÚSQUEDA DEL RUT CON FORMATO CORRECTO (19670568-6)
-        // Generamos las 3 variantes posibles que el SII podría mostrar
-        const rutConGuion = rutemisor.includes('-') ? rutemisor : `${rutemisor.slice(0, -1)}-${rutemisor.slice(-1)}`;
-        const rutLimpio = rutemisor.replace(/\D/g, '');
+        // --- BÚSQUEDA EN LA TABLA FINAL ---
+        console.log(`🎯 Buscando RUT exacto en tabla: ${rutParaTabla}`);
         
-        console.log(`🎯 Buscando en tabla formatos: "${rutConGuion}" o "${rutLimpio}"`);
-        await checkSession("Tabla Final");
-
-        const encontrado = await page.evaluate((conGuion, limpio) => {
+        const encontrado = await page.evaluate((target) => {
             const links = Array.from(document.querySelectorAll('table a, a'));
-            
-            // Buscamos coincidencia exacta con guion o limpia
-            const match = links.find(a => {
-                const txt = a.innerText.trim();
-                return txt === conGuion || txt.replace(/\D/g, '') === limpio;
-            });
-
+            // Buscamos coincidencia exacta con lo que el usuario ve en pantalla
+            const match = links.find(a => a.innerText.trim() === target);
             if (match) {
                 match.click();
                 return true;
             }
             return false;
-        }, rutConGuion, rutLimpio);
+        }, rutParaTabla);
 
         if (!encontrado) {
-            const htmlSnapshot = await page.evaluate(() => document.body.innerText.substring(0, 500));
-            throw new Error(`RUT no encontrado. El robot ve esto: ${htmlSnapshot}`);
+            throw new Error(`El emisor ${rutParaTabla} no aparece en la tabla de autorizados.`);
         }
 
-        console.log("✅ RUT seleccionado con éxito.");
         await new Promise(r => setTimeout(r, 5000));
-
+        console.log("✅ Navegación completada con éxito.");
+        
         res.json({ success: true, url: page.url() });
         await browser.close();
 
